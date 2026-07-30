@@ -191,16 +191,12 @@ else
     PROJECT_NAME=$(multica project get "$PROJECT_ID" --output json 2>/dev/null | jq -r '.title // "unknown"')
     ISSUE_JSON=$(multica issue create \
         --title "项目验收测试: $PROJECT_NAME 全量回归" \
-        --description "## 📋 流程
-| # | 阶段 | 状态 | 结果 |
-|---|------|------|------|
-| ⑤ | 测试验证 | ⬜ | |
-| ⑥ | 合并决策 | ⬜ | |
-
-验收范围：所有非 cancelled issue 已 done，执行全量回归测试。" \
+        --description "验收范围：所有非 cancelled issue 已 done，执行全量回归测试。" \
         --project "$PROJECT_ID" --priority high --output json)
     ISSUE_ID=$(echo "$ISSUE_JSON" | jq -r '.id')
     multica issue assign "$ISSUE_ID" --to "$SQUAD_ID"
+    # 设置验收单 property（初始全未勾）
+    # 不设 property = properties: {} = 全未勾
     echo "✅ 创建验收 issue: $(echo "$ISSUE_JSON" | jq -r '.identifier')"
     ACCEPTANCE_STATUS="created"
 fi
