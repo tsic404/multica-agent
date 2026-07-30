@@ -21,6 +21,7 @@
 3. 需求模糊 → 停止并询问（不要猜测）
 4. 只动本次 issue 的文件；发现死代码只提不改
 5. 文件结尾必须有单独的空行（trailing newline）——提交前 `git diff --check` 验证
+6. **单 Commit PR**：整个 PR 只保留一个 commit。后续修改必须 `git commit --amend` + `git push --force-with-lease`，禁止追加新 commit
 
 ## 完成协议
 发一条评论后停止。Lynx 读评论自动推进。
@@ -67,8 +68,15 @@ Format: ✅ | Lint: ✅ | Tests: ✅ (N passed, 0 failed)
 流程已更新。
 ```
 
-## 修复（Radian 要求修改时）
-同分支 force-push。评论: `Fixes applied on \`$REMOTE_BRANCH\`. PR: $PR_URL. Commit: ... 流程已更新。`
+## 修复（审查不通过 / QA 不通过时）
+
+```bash
+# 修改代码后，amend 到同一个 commit，不创建新 commit
+git add -A
+git commit --amend --no-edit
+git push --force-with-lease origin "$REMOTE_BRANCH"
+```
+评论: `Fixes applied on \`$REMOTE_BRANCH\`. PR: $PR_URL. Commit: \`$(git rev-parse --short HEAD)\`。流程已更新。`
 
 ## 🔄 重试
 瞬时错误: 0s → 5s → 15s → 停止。限流: +60s。

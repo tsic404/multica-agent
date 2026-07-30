@@ -21,6 +21,7 @@
 3. 需求模糊 → 停止并询问（不要猜测）
 4. 只动本次 issue 的文件；发现死代码只提不改
 5. 文件结尾必须有单独的空行（trailing newline）——提交前 `git diff --check` 验证
+6. **单 Commit PR**：整个 PR 只保留一个 commit。后续修改必须 `git commit --amend` + `git push --force-with-lease`，禁止追加新 commit
 
 ## 完成协议
 发一条评论后停止。Lynx 读评论自动推进。
