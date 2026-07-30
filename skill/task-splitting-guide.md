@@ -49,17 +49,23 @@ TSI-303 (BE: Engine Core)       ← 前置依赖: TSI-302 → 等待 TSI-302 don
 
 > PM 只负责创建任务和标注依赖。任务推进由 Lynx 读 `前置依赖` property 自动完成。
 
-### Property 类型选择
+### Property 类型选择 🚨 必须执行
 
-创建子 issue 时，根据类型选择对应 Property（**`property set --value "起始"`（标识类型，不推进阶段）**）：
+**每个子 issue 必须设置一个 Property 类型，状态为「起始」。**
+
+```bash
+multica issue property set "$CHILD_ID" --name "<Property>" --value "起始"
+```
 
 | 子任务类型 | Property |
 |-----------|----------|
-| Feature 开发 | 开发单 | `property set --value "起始"` |
-| Bug fix | Bug单 | `property set --value "起始"` |
-| Refactor | 开发单 | `property set --value "起始"` |
-| Trivial / Doc | Bug单 | `property set --value "起始"` |
-| 验收测试 | 验收单 | `property set --value "起始"` |
+| Feature 开发 | 开发单 |
+| Bug fix | Bug单 |
+| Refactor | 开发单 |
+| Trivial / Doc | Bug单 |
+| 验收测试 | 验收单 |
+
+> 「起始」标识 issue 类型，不推进阶段。Leader 跳过「起始」，从第一个实际阶段开始委派。
 
 ---
 
