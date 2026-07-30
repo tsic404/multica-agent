@@ -12,19 +12,16 @@ multica-agent/
 └── docs/           # Architecture & deployment docs
 ```
 
-## 自适应阶段
+## 自适应阶段 + DAG 依赖
 
-不同 issue 类型走不同阶段子集，由 multi_select property 驱动：
+Issue 的 multi_select property 驱动阶段追踪。文本 Property `前置依赖` 存放 DAG 依赖。Leader 委派前自动检查依赖是否满足。
 
-| Issue 类型 | Property | 阶段 |
-|-----------|----------|------|
-| Feature 父 | 需求单 | 需求分析 → 任务拆分 |
-| Feature 子 / Refactor | 开发单 | 开发 → 审查 → QA |
-| Bug fix | Bug单 | 开发 → 审查 → QA |
-| Trivial / Doc | Bug单（预勾） | QA |
-| Acceptance Test | 验收单 | QA |
-
-Leader (Lynx) 读 `issue get` 的 `properties` 字段，找第一个未勾 option = 当前阶段。
+| Issue 类型 | Property | Options |
+|-----------|----------|---------|
+| Feature 父 | 需求单 | 需求分析完成, 任务拆分完成 |
+| Feature 子 / Refactor | 开发单 | 开发完成, 审查通过, 测试通过 |
+| Bug fix / Trivial / Doc | Bug单 | 开发完成, 审查通过, 验证通过 |
+| Acceptance Test | 验收单 | 验收通过 |
 
 ## Fork-PR 模型
 

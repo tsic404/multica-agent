@@ -92,6 +92,30 @@ else
 fi
 ```
 
+## Check Dependencies Before Delegating
+```bash
+# Read 前置依赖 text property
+DEPS=$(printf '%s\n' "$ISSUE_JSON" | jq -r '.properties["8221fc26-301e-4aa2-a2e9-f9d0b7e6b0fd"] // ""')
+if [ -n "$DEPS" ] && [ "$DEPS" != "null" ] && [ -n "$(echo "$DEPS" | tr -d '[:space:]')" ]; then
+    PROJECT_ID=$(printf '%s\n' "$ISSUE_JSON" | jq -r '.project_id')
+    ALL_MET=true
+    for dep in $(echo "$DEPS" | tr ',' '\n'); do
+        dep=$(echo "$dep" | xargs)
+        [ -z "$dep" ] && continue
+        DEP_STATUS=$(multica issue list --project "$PROJECT_ID" --limit 200 --output json | jq -r ".issues[] | select(.identifier == \"$dep\") | .status // \"\"")
+        if [ "$DEP_STATUS" != "done" ]; then
+            echo "⏳ Dependency $dep not done (status: $DEP_STATUS). Waiting."
+            ALL_MET=false
+        fi
+    done
+    if [ "$ALL_MET" = false ]; then
+        echo "Not all dependencies met. Skipping delegation."
+        exit 0
+    fi
+    echo "✅ All dependencies met: $DEPS"
+fi
+```
+
 ## All Done → Close or Merge
 ```bash
 if [ "$ALL_DONE" = true ]; then
@@ -225,3 +249,4 @@ multica issue comment add "$ISSUE_ID" --content "Merged PR into main (rebase). T
 ## 🔒 Permission
 ALLOW: multica issue property list/set, comment list/add, issue update --status (blocked), issue get, gh pr view/merge --rebase
 DENY: multica issue update --description, issue update --status done, writing code, running tests, reviewing
+

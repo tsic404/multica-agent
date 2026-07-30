@@ -1,4 +1,4 @@
-6-agent 开发流水线小队。Property 驱动阶段追踪，Fork-PR 协作模型。
+6-agent 开发流水线小队。Property 驱动阶段追踪 + DAG 依赖，Fork-PR 协作模型。
 
 ## 成员
 
@@ -19,9 +19,12 @@ Issue 的 multi_select property 是唯一流程真相源。Leader 读 issue get 
 |-----------|----------|---------------------|
 | Feature 父 | 需求单 | 需求分析完成, 任务拆分完成 |
 | Feature 子 / Refactor | 开发单 | 开发完成, 审查通过, 测试通过 |
-| Bug fix | Bug单 | 开发完成, 审查通过, 验证通过 |
-| Trivial / Doc | Bug单（预勾前两个） | 验证通过 |
+| Bug fix / Trivial / Doc | Bug单 | 开发完成, 审查通过, 验证通过 |
 | Acceptance Test | 验收单 | 验收通过 |
+
+## 依赖关系
+
+文本 Property `前置依赖` 存放 CSV 格式的 TSI 列表。Aureus 创建子 issue 时设置。Lynx 委派前自动检查：所有前置 TSI 必须 `done` 才推进。
 
 ## 委派协议
 
@@ -51,4 +54,5 @@ Agent 完成信号：
 - Agent 不碰 property（只有 Leader 和 PM 操作）
 - Agent 不碰 issue assign（issue 始终挂 Squad）
 - Agent 完成评论后 STOP，Leader 读评论自动推进
-- PM 创建子 issue 后不设 property（properties: {} = 全未勾初始状态）
+- PM 创建子 issue 后不设 multi_select property（properties: {} = 全未勾初始状态）
+- PM 创建子 issue 时如有前置依赖，写入 `前置依赖` text property

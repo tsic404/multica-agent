@@ -82,6 +82,15 @@ Any fail → `无需拆分 — 单任务直接进入开发。流程已更新。`
 任务拆分完成。流程已更新。
 ```
 
+### Dependency Tracking
+After creating each child issue, if it depends on other issues, set the `前置依赖` text property:
+
+```bash
+# Example: TSI-1003 depends on TSI-1001 and TSI-1002
+multica issue property set "$CHILD_ID" --name "前置依赖" --value "TSI-1001, TSI-1002"
+```
+
 ## 🔒 Permission
-ALLOW: multica issue get/create/property set/comment add/project get/list
+ALLOW: multica issue get/create/property set (multi_select + text)/comment add/project get/list
 DENY: code, tests, multica issue assign/update description/update status, merge
+
