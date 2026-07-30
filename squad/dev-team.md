@@ -1,4 +1,4 @@
-6-agent 开发流水线小队。Property 驱动阶段追踪 + DAG 依赖，Fork-PR 协作模型。
+6-agent 开发流水线小队。Property 驱动阶段追踪 + 起始标识 + DAG 依赖，Fork-PR 协作模型。
 
 ## 成员
 
@@ -13,14 +13,14 @@
 
 ## 阶段追踪
 
-Issue 的 multi_select property 是唯一流程真相源。Leader 读 issue get 的 properties 字段，找第一个未勾 option = 当前阶段。不同 issue 类型走不同阶段子集：
+Issue 的 multi_select property 是唯一流程真相源。每个 Property 第一个 option 为「起始」——仅标识类型，不触发阶段推进。Leader 跳过「起始」，找第一个未勾的后续 option = 当前阶段。
 
 | Issue 类型 | Property | Options（流水线顺序） |
 |-----------|----------|---------------------|
-| Feature 父 | 需求单 | 需求分析完成, 任务拆分完成 |
-| Feature 子 / Refactor | 开发单 | 开发完成, 审查通过, 测试通过 |
-| Bug fix / Trivial / Doc | Bug单 | 开发完成, 审查通过, 验证通过 |
-| Acceptance Test | 验收单 | 验收通过 |
+| Feature 父 | 需求单 | 起始, 需求分析完成, 任务拆分完成 |
+| Feature 子 / Refactor | 开发单 | 起始, 开发完成, 审查通过, 测试通过 |
+| Bug fix / Trivial / Doc | Bug单 | 起始, 开发完成, 审查通过, 验证通过 |
+| Acceptance Test | 验收单 | 起始, 验收通过 |
 
 ## 依赖关系
 
@@ -54,5 +54,5 @@ Agent 完成信号：
 - Agent 不碰 property（只有 Leader 和 PM 操作）
 - Agent 不碰 issue assign（issue 始终挂 Squad）
 - Agent 完成评论后 STOP，Leader 读评论自动推进
-- PM 创建子 issue 后不设 multi_select property（properties: {} = 全未勾初始状态）
+- PM 创建子 issue 后设 `property set --value "起始"`（标识类型，不推进阶段）
 - PM 创建子 issue 时如有前置依赖，写入 `前置依赖` text property

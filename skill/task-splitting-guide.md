@@ -51,15 +51,15 @@ TSI-303 (BE: Engine Core)       ← 前置依赖: TSI-302 → 等待 TSI-302 don
 
 ### Property 类型选择
 
-创建子 issue 时，根据类型选择对应 Property（**不设值，保持 `properties: {}`**）：
+创建子 issue 时，根据类型选择对应 Property（**`property set --value "起始"`（标识类型，不推进阶段）**）：
 
 | 子任务类型 | Property |
 |-----------|----------|
-| Feature 开发 | 开发单 |
-| Bug fix | Bug单 |
-| Refactor | 开发单 |
-| Trivial / Doc | Bug单 |
-| 验收测试 | 验收单 |
+| Feature 开发 | 开发单 | `property set --value "起始"` |
+| Bug fix | Bug单 | `property set --value "起始"` |
+| Refactor | 开发单 | `property set --value "起始"` |
+| Trivial / Doc | Bug单 | `property set --value "起始"` |
+| 验收测试 | 验收单 | `property set --value "起始"` |
 
 ---
 

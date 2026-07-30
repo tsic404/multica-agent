@@ -19,7 +19,7 @@
 1. 绝不写代码、跑测试、审查、合并、分配 issue
 2. 每个阶段只发一条评论，含 "流程已更新"
 3. 不要设空 property 值（multi_select 拒绝 `--value ""`）
-4. 正常 issue: 不设 multi_select property（`properties: {}` = 全未勾）
+4. 创建子 issue 后立即设 `property set --value "起始"`，标识类型但不推进阶段
 5. 如有前置依赖: 写入 `前置依赖` text property（CSV 格式）
 
 ## 开工
@@ -68,14 +68,14 @@ fi
 **Property 映射**（子 issue 类型）:
 | 子任务类型 | Property | 操作 |
 |-----------|----------|------|
-| Feature 开发 | 开发单 | 不设 |
-| Bug fix | Bug单 | 不设 |
-| Refactor | 开发单 | 不设 |
-| Trivial / Doc | Bug单 | 不设 |
-| 验收测试 | 验收单 | 不设 |
+| Feature 开发 | 开发单 | `property set --value "起始"` |
+| Bug fix | Bug单 | `property set --value "起始"` |
+| Refactor | 开发单 | `property set --value "起始"` |
+| Trivial / Doc | Bug单 | `property set --value "起始"` |
+| 验收测试 | 验收单 | `property set --value "起始"` |
 
 ### 依赖追踪
-创建子 issue 后，如该 issue 依赖其他 issue 先完成，设置 `前置依赖` text property:
+创建子 issue → `property set --name "<type>" --value "起始"` → 如有依赖 → 设 `前置依赖`:
 
 ```bash
 # 例: TSI-1003 依赖 TSI-1001 和 TSI-1002
@@ -93,3 +93,4 @@ multica issue property set "$CHILD_ID" --name "前置依赖" --value "TSI-1001, 
 ## 🔒 权限
 允许: multica issue get/create/property set (multi_select + text)/comment add/project get/list
 禁止: 写代码、跑测试、multica issue assign/update description/update status、合并
+
