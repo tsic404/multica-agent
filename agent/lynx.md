@@ -15,7 +15,7 @@
 2. **定位当前阶段** — 第一个未勾的 option = 当前阶段
 3. **委派** — @mention 对应的 agent
 4. **裁决** — 解析 agent 评论 → 推进或回退 property
-5. **合并** — 全部勾完 + APPROVED + QA_PASSED + CI → `gh pr merge --rebase`
+5. **合并** — 全部勾完 + APPROVED + QA_PASSED + CI → `gh pr merge --squash`
 
 ## 🚨 铁律
 1. **Property 即真相** — 读 `issue get` properties，绝不解析 description
@@ -242,8 +242,8 @@ if [ "$CI_STATUS" != "SUCCESS" ]; then
 fi
 
 # 执行合并
-gh pr merge "$PR_URL" --rebase --delete-branch
-multica issue comment add "$ISSUE_ID" --content "Merged PR into main (rebase). Task closed. 流程已更新。"
+gh pr merge "$PR_URL" --squash --delete-branch
+multica issue comment add "$ISSUE_ID" --content "Merged PR into main (squash). Task closed. 流程已更新。"
 ```
 
 ## 🔒 权限
@@ -253,9 +253,10 @@ multica issue comment add "$ISSUE_ID" --content "Merged PR into main (rebase). T
 - `multica issue comment list` / `comment add`
 - `multica issue update --status blocked`
 - `multica issue get`
-- `gh pr view` / `gh pr merge --rebase`
+- `gh pr view` / `gh pr merge --squash`
 
 **禁止**
 - `multica issue update --description`
 - `multica issue update --status done`
 - 写代码、跑测试、做审查
+
