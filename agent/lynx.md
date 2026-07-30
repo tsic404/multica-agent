@@ -46,31 +46,31 @@ ACC_PROP=$(printf '%s\n' "$PROPS" | jq -r '.["c43b7f71-691c-48b9-9e58-c7e35ef22b
 
 if [ "$DEV_PROP" != "" ]; then
     PROP_NAME="开发单"; PROP_ID="94d4bcb6-1849-4b19-a422-25d5b30820d6"
-    OPTIONS="cf14a2f1-e26f-43fb-bddb-c4420d7048c6:开发完成 d1082d00-61b1-4fa8-b179-bb3347e90caa:审查通过 6bc179d1-d378-41a7-a190-fb498416a280:测试通过"
+    OPTIONS="ffcf648e-9eec-4303-89c4-3ec81a2a065a:起始 cf14a2f1-e26f-43fb-bddb-c4420d7048c6:开发完成 d1082d00-61b1-4fa8-b179-bb3347e90caa:审查通过 6bc179d1-d378-41a7-a190-fb498416a280:测试通过"
     HAS_QA=true
 elif [ "$BUG_PROP" != "" ]; then
     PROP_NAME="Bug单"; PROP_ID="e392bddb-5b06-4ee5-b49c-5408bcfa6633"
-    OPTIONS="1ef36bd8-b0fd-4be6-814f-59c4b2fc61ec:开发完成 c0d5ee3a-2ac8-4a96-a9a0-cba3e2b307b4:审查通过 5cbc00b1-d03e-41bf-9787-e29e516b7094:验证通过"
+    OPTIONS="9f77ad0e-4f4d-400e-b24c-58f38179b454:起始 1ef36bd8-b0fd-4be6-814f-59c4b2fc61ec:开发完成 c0d5ee3a-2ac8-4a96-a9a0-cba3e2b307b4:审查通过 5cbc00b1-d03e-41bf-9787-e29e516b7094:验证通过"
     HAS_QA=true
 elif [ "$REQ_PROP" != "" ]; then
     PROP_NAME="需求单"; PROP_ID="7138b7eb-269a-4981-938f-9b795685d2ed"
-    OPTIONS="f308b03d-43b8-4739-af1e-532e5587b789:需求分析完成 ced93264-a390-47fe-bfa0-43aad14b8a16:任务拆分完成"
+    OPTIONS="2c43de65-8d7c-453e-b90c-3b8681aa00c4:起始 f308b03d-43b8-4739-af1e-532e5587b789:需求分析完成 ced93264-a390-47fe-bfa0-43aad14b8a16:任务拆分完成"
     HAS_QA=false
 elif [ "$ACC_PROP" != "" ]; then
     PROP_NAME="验收单"; PROP_ID="c43b7f71-691c-48b9-9e58-c7e35ef22bf2"
-    OPTIONS="bb170ba2-74c8-4193-942d-c03687ddc41c:验收通过"
+    OPTIONS="7bfa601b-0680-42fe-9e8e-c031b5fade38:起始 bb170ba2-74c8-4193-942d-c03687ddc41c:验收通过"
     HAS_QA=true
 else
     TITLE=$(printf '%s\n' "$ISSUE_JSON" | jq -r '.title')
     if echo "$TITLE" | grep -qiE '验收测试|全量回归|acceptance.test'; then
         PROP_NAME="验收单"; PROP_ID="c43b7f71-691c-48b9-9e58-c7e35ef22bf2"
-        OPTIONS="bb170ba2-74c8-4193-942d-c03687ddc41c:验收通过"; HAS_QA=true
+        OPTIONS="7bfa601b-0680-42fe-9e8e-c031b5fade38:起始 bb170ba2-74c8-4193-942d-c03687ddc41c:验收通过"; HAS_QA=true
     elif echo "$TITLE" | grep -qiE 'bug|fix|修复|缺陷'; then
         PROP_NAME="Bug单"; PROP_ID="e392bddb-5b06-4ee5-b49c-5408bcfa6633"
-        OPTIONS="1ef36bd8-b0fd-4be6-814f-59c4b2fc61ec:开发完成 c0d5ee3a-2ac8-4a96-a9a0-cba3e2b307b4:审查通过 5cbc00b1-d03e-41bf-9787-e29e516b7094:验证通过"; HAS_QA=true
+        OPTIONS="9f77ad0e-4f4d-400e-b24c-58f38179b454:起始 1ef36bd8-b0fd-4be6-814f-59c4b2fc61ec:开发完成 c0d5ee3a-2ac8-4a96-a9a0-cba3e2b307b4:审查通过 5cbc00b1-d03e-41bf-9787-e29e516b7094:验证通过"; HAS_QA=true
     else
         PROP_NAME="开发单"; PROP_ID="94d4bcb6-1849-4b19-a422-25d5b30820d6"
-        OPTIONS="cf14a2f1-e26f-43fb-bddb-c4420d7048c6:开发完成 d1082d00-61b1-4fa8-b179-bb3347e90caa:审查通过 6bc179d1-d378-41a7-a190-fb498416a280:测试通过"; HAS_QA=true
+        OPTIONS="ffcf648e-9eec-4303-89c4-3ec81a2a065a:起始 cf14a2f1-e26f-43fb-bddb-c4420d7048c6:开发完成 d1082d00-61b1-4fa8-b179-bb3347e90caa:审查通过 6bc179d1-d378-41a7-a190-fb498416a280:测试通过"; HAS_QA=true
     fi
 fi
 echo "Property: $PROP_NAME ($PROP_ID)"
@@ -249,3 +249,4 @@ multica issue comment add "$ISSUE_ID" --content "Merged PR into main (rebase). T
 ## 🔒 权限
 允许: multica issue property list/set, comment list/add, issue update --status (blocked), issue get, gh pr view/merge --rebase
 禁止: multica issue update --description, issue update --status done, 写代码、跑测试、做审查
+
