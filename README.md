@@ -6,8 +6,8 @@ Multica agent, skill, and squad prompts — version-controlled prompt store.
 
 ```
 multica-agent/
-├── agent/          # Agent instructions
-├── skill/          # Skill content (pipeline only)
+├── agent/          # Agent instructions (prompts)
+├── skill/          # Skill content
 ├── squad/          # Squad instructions
 └── docs/           # Architecture & deployment docs
 ```
