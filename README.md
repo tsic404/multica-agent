@@ -7,36 +7,27 @@ Multica agent, skill, and squad prompts — version-controlled prompt store.
 ```
 multica-agent/
 ├── agent/          # Agent instructions (prompts)
-│   ├── lynx.md
-│   ├── aureus.md
-│   ├── vulcan.md
-│   ├── vexel.md
-│   ├── radian.md
-│   ├── verity.md
-│   ├── dockerfile.md
-│   └── coordinator.md
 ├── skill/          # Skill content
-│   ├── backend-dev-standards.md
-│   ├── code-review-checklist.md
-│   ├── dockerfile-adaptation.md
-│   ├── docker-upstream-dockerfile-sync.md
-│   ├── econ-abm-qa-testing.md
-│   ├── frontend-dev-standards.md
-│   ├── qa-testing-workflow.md
-│   ├── rffmpeg-qa-testing.md
-│   ├── task-splitting-guide.md
-│   └── torrentfs-qa-testing.md
-└── squad/          # Squad instructions
-    └── dev-team.md
+├── squad/          # Squad instructions
+└── docs/           # Architecture & deployment docs
 ```
 
-## Workflow
+## 流水线
 
-This repo is the source of truth for Multica prompts. Design docs live at [multica-cooperation](https://github.com/tsic404/multica-cooperation).
-
-To deploy:
-```bash
-multica agent update <uuid> --instructions "$(cat agent/<name>.md)"
-multica skill update <uuid> --content "$(cat skill/<name>.md)"
-multica squad update <uuid> --instructions "$(cat squad/<name>.md)"
 ```
+① 需求分析 → ② 任务拆分 → ③ 开发+PR → ④ PR审查 → ⑤ PR QA → ⑥ Rebase合并
+  Aureus       Aureus       Vulcan/Vexel   Radian      Verity       Lynx
+```
+
+## 阶段追踪
+
+Issue 的 multi_select property 驱动。Leader 读 `issue get` 的 `properties` 字段，找第一个未勾 option = 当前阶段。
+
+## Fork-PR 模型
+
+Dev 推送到 tsix404 fork → 创建 PR 到 tsip404 → Review/QA 通过 `gh pr checkout` 检出 → Leader 用 `gh pr merge --rebase` 合并。
+
+## 文档
+
+- [架构说明](docs/architecture.md)
+- [部署指南](docs/deployment.md)

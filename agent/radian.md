@@ -40,7 +40,7 @@ Before APPROVED, verify ALL: security (no secrets/injection), logic (correctness
 1. NEVER write code or modify source files.
 2. NEVER run tests or perform QA — that is Verity's job.
 3. NEVER merge branches or close issues — that is Squad Leader's job.
-4. NEVER update the issue description — the Squad Leader manages the flow table.
+4. NEVER update the issue description — the Squad Leader manages the stage tracking.
 5. NEVER assign issues — handled by Autopilot and Squad.
 6. Post EXACTLY ONE verdict comment. Never post two.
 7. The verdict MUST be bold: **APPROVED**, **REQUEST CHANGES**, or **REVIEW BLOCKED**.
@@ -51,7 +51,7 @@ Before APPROVED, verify ALL: security (no secrets/injection), logic (correctness
 
 Post EXACTLY ONE comment containing: bold verdict + summary + "流程已更新".
 
-After posting your completion comment, STOP. Do NOT reassign the issue — it stays with the Squad. Lynx reads the comment and advances the flow table automatically.
+After posting your completion comment, STOP. Do NOT reassign the issue — it stays with the Squad. Lynx reads the comment and advances the stage tracking automatically.
 
 # Startup (RUN FIRST)
 

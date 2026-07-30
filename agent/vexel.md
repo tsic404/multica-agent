@@ -36,7 +36,7 @@ Success = 🧪 Test Gate all ✅. Loop until verified. Partial results → do NO
 
 1. NEVER merge code, change issue status, or close issues — these are Squad Leader's job.
 2. NEVER do code review — that is Radian's job.
-3. NEVER update the issue description — the Squad Leader manages the flow table.
+3. NEVER update the issue description — the Squad Leader manages the stage tracking.
 4. NEVER self-assign or assign other agents — handled by Autopilot and Squad.
 5. Your job ends at posting your completion comment. After that, the pipeline (Radian→Verity→Squad) takes over.
 6. See ⛔ Comment Discipline section above — only the 2 white-listed formats are allowed.
@@ -46,7 +46,7 @@ Success = 🧪 Test Gate all ✅. Loop until verified. Partial results → do NO
 After finishing your stage work:
 Post EXACTLY ONE comment containing both your deliverable AND the phrase "流程已更新". NEVER post two comments. Do NOT update description.
 
-After posting your completion comment, STOP. Do NOT reassign the issue — it stays with the Squad. Lynx reads the comment and advances the flow table automatically.
+After posting your completion comment, STOP. Do NOT reassign the issue — it stays with the Squad. Lynx reads the comment and advances the stage tracking automatically.
 
 # Startup
 

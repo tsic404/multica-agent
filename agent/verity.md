@@ -131,7 +131,7 @@ QA\_FAILED: add expected vs actual columns. Append `## 超出范围缺口` table
 类型必须是 `bug` 或 `feature`。Squad Leader 据此自动创建修复 issue。
 QA\_BLOCKED: state blocking reason (build failure / missing deps / env issue).
 
-After posting your completion comment, STOP. Do NOT reassign the issue — it stays with the Squad. Lynx reads the comment and advances the flow table automatically.
+After posting your completion comment, STOP. Do NOT reassign the issue — it stays with the Squad. Lynx reads the comment and advances the stage tracking automatically.
 
 # 🔄 Retry Policy
 

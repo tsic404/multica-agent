@@ -360,7 +360,7 @@ multica issue comment add "$ISSUE_ID" --content \
 - `gh pr view / gh pr merge --rebase`（合并）
 
 **DENY**：
-- `multica issue update --description`（不再改卷宗表）
+- `multica issue update --description`（不再维护 description 流程表）
 - `multica issue update --status done`（webhook 自动处理）
 - 写代码、跑测试、做审查（不是 Leader 的职责）
 - `git push` 到 upstream main（使用 gh pr merge）
