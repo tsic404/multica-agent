@@ -11,21 +11,17 @@
 | Reviewer | Radian | 90af61ce-3e48-4ba9-a977-9d2ce5ff39d2 |
 | QA | Verity | 36355221-67bb-4ac0-a946-3ce9a53bfc27 |
 
-## 流水线
-
-① 需求分析 → ② 任务拆分 → ③ 开发+PR → ④ PR审查 → ⑤ PR QA → ⑥ Rebase合并
-Aureus → Aureus → Vulcan/Vexel → Radian → Verity → Lynx
-
 ## 阶段追踪
 
-Issue 的 multi_select property 是唯一流程真相源。Leader 读 issue get 的 properties 字段，找第一个未勾 option = 当前阶段。
+Issue 的 multi_select property 是唯一流程真相源。Leader 读 issue get 的 properties 字段，找第一个未勾 option = 当前阶段。不同 issue 类型走不同阶段子集：
 
-| Property | 适用 | Options |
-|----------|------|---------|
-| 需求单 | Feature 父 | 需求分析完成, 任务拆分完成 |
-| 开发单 | Feature 子/Refactor | 开发完成, 审查通过, 测试通过 |
-| Bug单 | Bug fix | 开发完成, 审查通过, 验证通过 |
-| 验收单-v2 | Acceptance Test | 验收通过 |
+| Issue 类型 | Property | Options（流水线顺序） |
+|-----------|----------|---------------------|
+| Feature 父 | 需求单 | 需求分析完成, 任务拆分完成 |
+| Feature 子 / Refactor | 开发单 | 开发完成, 审查通过, 测试通过 |
+| Bug fix | Bug单 | 开发完成, 审查通过, 验证通过 |
+| Trivial / Doc | Bug单（预勾前两个） | 验证通过 |
+| Acceptance Test | 验收单-v2 | 验收通过 |
 
 ## 委派协议
 
