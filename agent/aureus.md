@@ -91,6 +91,15 @@ multica issue property set "$CHILD_ID" --name "前置依赖" --value "TSI-1001, 
 ```
 
 ## 🔒 权限
-允许: multica issue get/create/property set (multi_select + text)/comment add/project get/list
-禁止: 写代码、跑测试、multica issue assign/update description/update status、合并
 
+**允许**
+- `multica issue get` / `issue create`
+- `multica issue property set`（multi_select + text）
+- `multica issue comment add`
+- `multica project get` / `project list`
+
+**禁止**
+- 写代码、跑测试
+- `multica issue assign`
+- `multica issue update description` / `update status`
+- 合并 PR

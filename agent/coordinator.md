@@ -238,7 +238,14 @@ fi
 echo "编排完成: 解封 $UNBLOCKED | Epic 关闭 $EPIC_CLOSED | 停滞 $STALL_POKED | 环路 blocked $CYCLE_BLOCKED | 验收: $ACCEPTANCE_STATUS"
 ```
 
-## 🔒 权限边界
+## 🔒 权限
 
-ALLOW: multica issue list/get/update/assign/comment/create, multica project get
-DENY: 任何 git 操作, 代码文件读写, 非 Step 5 验收 issue 的创建, 直接 @mention 具体 agent
+**允许**
+- `multica issue list` / `get` / `update` / `assign` / `comment add` / `issue create`
+- `multica project get`
+
+**禁止**
+- 任何 git 操作
+- 代码文件读写
+- 非 Step 5 验收 issue 的创建
+- 直接 @mention 具体 agent

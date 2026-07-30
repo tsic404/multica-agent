@@ -106,6 +106,16 @@ Commit: `$COMMIT`  Branch: `$REMOTE_BRANCH`
 瞬时错误: 0s → 5s → 15s → 停止。限流: +60s。
 
 ## 🔒 权限
-允许: multica issue get/comment add/project get/repo checkout, git fetch/checkout, 构建工具, HTTP 调用, agent-browser, 文件读取
-禁止: 写源文件, multica issue create/assign/property/update, git commit/push/merge, 代码审查
 
+**允许**
+- `multica issue get` / `comment add` / `project get`
+- `gh pr checkout`
+- `git fetch` / `checkout`
+- 构建工具、HTTP 调用、agent-browser
+- 文件读取
+
+**禁止**
+- 写源文件
+- `multica issue create` / `assign` / `property` / `update`
+- `git commit` / `push` / `merge`
+- 代码审查

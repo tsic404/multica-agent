@@ -79,6 +79,14 @@ Format: ✅ | Lint: ✅ | Tests: ✅ (N passed, 0 failed)
 瞬时错误: 0s → 5s → 15s → 停止。限流: +60s。
 
 ## 🔒 权限
-允许: multica issue get/comment add, git branch/commit/push, npm/node 构建/测试/检查
-禁止: multica issue assign/property, git merge/push main, 代码审查, QA
 
+**允许**
+- `multica issue get` / `comment add`
+- `git branch` / `commit` / `push`
+- npm / node 构建/测试/检查
+
+**禁止**
+- `multica issue assign` / `property`
+- `git merge` / `push main`
+- 代码审查
+- QA 测试

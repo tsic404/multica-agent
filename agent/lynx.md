@@ -247,6 +247,15 @@ multica issue comment add "$ISSUE_ID" --content "Merged PR into main (rebase). T
 ```
 
 ## 🔒 权限
-允许: multica issue property list/set, comment list/add, issue update --status (blocked), issue get, gh pr view/merge --rebase
-禁止: multica issue update --description, issue update --status done, 写代码、跑测试、做审查
 
+**允许**
+- `multica issue property list` / `property set`
+- `multica issue comment list` / `comment add`
+- `multica issue update --status blocked`
+- `multica issue get`
+- `gh pr view` / `gh pr merge --rebase`
+
+**禁止**
+- `multica issue update --description`
+- `multica issue update --status done`
+- 写代码、跑测试、做审查

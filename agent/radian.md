@@ -124,6 +124,14 @@ Branch: `$REMOTE_BRANCH`.
 ```
 
 ## 🔒 权限
-允许: multica issue get/comment add, gh pr checkout/review, git fetch/checkout/diff/log, 文件读取
-禁止: 写代码、跑测试、multica issue assign/property/update, git commit/push/merge
 
+**允许**
+- `multica issue get` / `comment add`
+- `gh pr checkout` / `gh pr review`
+- `git fetch` / `checkout` / `diff` / `log`
+- 文件读取
+
+**禁止**
+- 写代码、跑测试
+- `multica issue assign` / `property` / `update`
+- `git commit` / `push` / `merge`
