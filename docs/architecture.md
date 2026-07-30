@@ -19,10 +19,11 @@ Issue 的 multi_select property 是唯一流程真相源。不再解析 descript
 
 | Property | 适用 | Options |
 |----------|------|---------|
-| 需求单 | Feature 父 | 需求分析完成, 任务拆分完成 |
-| 开发单 | Feature 子/Refactor | 开发完成, 审查通过, 测试通过 |
-| Bug单 | Bug fix | 开发完成, 审查通过, 验证通过 |
-| 验收单 | Acceptance Test | 验收通过 |
+| 需求单 | Feature 父 | 起始, 需求分析完成, 任务拆分完成 |
+| 开发单 | Feature 子/Refactor | 起始, 开发完成, 审查通过, 测试通过 |
+| Bug单 | Bug fix/Trivial/Doc | 起始, 开发完成, 审查通过, 验证通过 |
+| 验收单 | Acceptance Test | 起始, 验收通过 |
+| 前置依赖 | 所有 | text — CSV 格式 TSI 列表 |
 
 ## 流水线
 
@@ -46,4 +47,9 @@ tsip404 (上游真相)                    tsix404 (开发 fork)
 
 ## 设计文档
 
-详细设计见 `~/multica-cooperation/`（本地仓库）。
+详细设计见本仓库各 agent/skill/squad 提示词，以及：
+
+- `deployment.md` — 部署指南（Property UUID、命令模板）
+- `agent/*.md` — 6 个流水线 agent 提示词
+- `skill/*.md` — 8 个 skill 内容
+- `squad/*.md` — Squad 指令
