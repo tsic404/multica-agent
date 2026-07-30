@@ -5,7 +5,7 @@ issue 内部的阶段流转（①②③④⑤⑥）由 Squad Leader 负责，你
 
 ## ⛔ 硬约束
 
-1. 依赖图来源：issue description 的「依赖:」行（TSI 标识符）。parent_issue_id 仅用于 Epic（Section 3），不作为阻塞条件
+1. 依赖图来源：issue 的「前置依赖」text property（TSI 标识符）。parent_issue_id 仅用于 Epic（Section 3），不作为阻塞条件
 2. 所有外部触发走 Squad: `[@dev-team](mention://squad/<UUID>)`，绝不直接 @mention 具体 agent
 3. 检测到依赖环路 → 标记全部环路 issue 为 blocked + 发布报告，不强行解封
 4. 不创建预判性实现 issue。缺口发现走 QA→Leader 提取→child issue
@@ -48,17 +48,14 @@ echo "活跃 issue: $ACTIVE"
 ```bash
 # 2a. 构建邻接表 + 缓存 description（避免 Step 2c 重复 API 调用）
 declare -A DEP_GRAPH
-> /tmp/desc_cache.txt
-
 TODO_IDS=$(jq -r '.issues[] | select(.status == "todo" and .assignee_id == null) | .id' /tmp/all_issues.json)
 
 for ISSUE_ID in $TODO_IDS; do
     ISSUE_JSON=$(multica issue get "$ISSUE_ID" --output json)
     DESC=$(echo "$ISSUE_JSON" | jq -r '.description // ""')
-    echo "$ISSUE_ID<<<DESC>>>$DESC" >> /tmp/desc_cache.txt
-    
-    # 提取「依赖:」行中的 TSI 标识符
-    DEPS=$(echo "$DESC" | sed -n 's/.*依赖:\s*//p' | head -1 | tr -d ' ')
+
+    # 读取「前置依赖」text property 中的 TSI 标识符
+    DEPS=$(echo "$ISSUE_JSON" | jq -r '.properties["8221fc26-301e-4aa2-a2e9-f9d0b7e6b0fd"] // ""')
     [ -z "$DEPS" ] || [ "$DEPS" = "无" ] && continue
     
     RESOLVED=""
@@ -92,8 +89,8 @@ for ISSUE_ID in $TODO_IDS; do
     STATUS=$(jq -r ".issues[] | select(.id == \"$ISSUE_ID\") | .status" /tmp/all_issues.json)
     [ "$STATUS" = "blocked" ] && continue
     
-    DESC=$(grep "^${ISSUE_ID}<<<DESC>>>" /tmp/desc_cache.txt | head -1 | sed 's/.*<<<DESC>>>//')
-    DEPS=$(echo "$DESC" | sed -n 's/.*依赖:\s*//p' | head -1 | tr -d ' ')
+    ISSUE_JSON_C=$(multica issue get "$ISSUE_ID" --output json)
+    DEPS=$(echo "$ISSUE_JSON" | jq -r '.properties["8221fc26-301e-4aa2-a2e9-f9d0b7e6b0fd"] // ""')
     IDENT=$(jq -r ".issues[] | select(.id == \"$ISSUE_ID\") | .identifier" /tmp/all_issues.json)
     
     if [ -z "$DEPS" ] || [ "$DEPS" = "无" ]; then
@@ -183,7 +180,7 @@ done < <(jq -r '.issues[] | select(.status == "in_progress" and .assignee_id == 
 
 ```bash
 ACTIVE_COUNT=$(jq '[.issues[] | select(.status != "done" and .status != "cancelled")] | length' /tmp/all_issues.json)
-OPEN_ACCEPTANCE=$(jq '[.issues[] | select(.title | test("项目验收测试|功能回归验证")) | select(.status != "done")] | length' /tmp/all_issues.json)
+OPEN_ACCEPTANCE=$(jq '[.issues[] | select(.title | test("项目验收测试|功能回归验证")) | select(.status != "done" and .status != "cancelled")] | length' /tmp/all_issues.json)
 
 if [ "$OPEN_ACCEPTANCE" -gt 0 ]; then
     echo "已有 $OPEN_ACCEPTANCE 个未完成验收 issue，跳过创建"
@@ -212,7 +209,7 @@ fi
 ### Step 6: 验收完成监控
 
 ```bash
-ACCEPTANCE=$(jq '[.issues[] | select(.title | test("项目验收测试")) | select(.status != "done")] | first' /tmp/all_issues.json)
+ACCEPTANCE=$(jq '[.issues[] | select(.title | test("项目验收测试")) | select(.status != "done" and .status != "cancelled")] | first' /tmp/all_issues.json)
 ACCEPTANCE_ID=$(echo "$ACCEPTANCE" | jq -r '.id // ""')
 
 if [ -n "$ACCEPTANCE_ID" ]; then
