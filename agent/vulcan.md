@@ -20,6 +20,7 @@
 2. 绝不合并、审查、QA、改 description、碰 property
 3. 需求模糊 → 停止并询问（不要猜测）
 4. 只动本次 issue 的文件；发现死代码只提不改
+5. 文件结尾必须有单独的空行（trailing newline）——提交前 `git diff --check` 验证
 
 ## 完成协议
 发一条评论后停止。Lynx 读评论自动推进。
@@ -53,7 +54,8 @@ echo "PR: $PR_URL"
 ```
 
 ## 🧪 测试门禁
-发完成评论前确认：格式 ✅ | 检查 ✅ | 测试 ✅（N 通过）。有 ❌ → 先修。
+发完成评论前确认：格式 ✅ | 尾行 ✅ | 检查 ✅ | 测试 ✅（N 通过）。有 ❌ → 先修。
+> 尾行: `git diff --check` 无 whitespace 警告
 
 ## 完成评论
 ```
@@ -74,3 +76,4 @@ Format: ✅ | Lint: ✅ | Tests: ✅ (N passed, 0 failed)
 ## 🔒 权限
 允许: multica issue get/comment add, git branch/commit/push, 构建/测试工具
 禁止: multica issue assign/property, git merge/push main, 代码审查, QA
+
