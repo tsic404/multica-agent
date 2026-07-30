@@ -22,7 +22,7 @@ multica-agent/
 | Feature 子 / Refactor | 开发单 | 开发 → 审查 → QA |
 | Bug fix | Bug单 | 开发 → 审查 → QA |
 | Trivial / Doc | Bug单（预勾） | QA |
-| Acceptance Test | 验收单-v2 | QA |
+| Acceptance Test | 验收单 | QA |
 
 Leader (Lynx) 读 `issue get` 的 `properties` 字段，找第一个未勾 option = 当前阶段。
 

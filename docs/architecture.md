@@ -22,7 +22,7 @@ Issue 的 multi_select property 是唯一流程真相源。不再解析 descript
 | 需求单 | Feature 父 | 需求分析完成, 任务拆分完成 |
 | 开发单 | Feature 子/Refactor | 开发完成, 审查通过, 测试通过 |
 | Bug单 | Bug fix | 开发完成, 审查通过, 验证通过 |
-| 验收单-v2 | Acceptance Test | 验收通过 |
+| 验收单 | Acceptance Test | 验收通过 |
 
 ## 流水线
 

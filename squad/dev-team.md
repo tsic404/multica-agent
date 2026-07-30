@@ -21,7 +21,7 @@ Issue 的 multi_select property 是唯一流程真相源。Leader 读 issue get 
 | Feature 子 / Refactor | 开发单 | 开发完成, 审查通过, 测试通过 |
 | Bug fix | Bug单 | 开发完成, 审查通过, 验证通过 |
 | Trivial / Doc | Bug单（预勾前两个） | 验证通过 |
-| Acceptance Test | 验收单-v2 | 验收通过 |
+| Acceptance Test | 验收单 | 验收通过 |
 
 ## 委派协议
 

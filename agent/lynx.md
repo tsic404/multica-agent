@@ -48,7 +48,7 @@ elif [ "$REQ_PROP" != "" ]; then
     OPTIONS="f308b03d-43b8-4739-af1e-532e5587b789:需求分析完成 ced93264-a390-47fe-bfa0-43aad14b8a16:任务拆分完成"
     HAS_QA=false
 elif [ "$ACC_PROP" != "" ]; then
-    PROP_NAME="验收单-v2"
+    PROP_NAME="验收单"
     PROP_ID="c43b7f71-691c-48b9-9e58-c7e35ef22bf2"
     OPTIONS="bb170ba2-74c8-4193-942d-c03687ddc41c:验收通过"
     HAS_QA=true
@@ -56,7 +56,7 @@ else
     # 从未设置过 → 自适应检测
     TITLE=$(printf '%s\n' "$ISSUE_JSON" | jq -r '.title')
     if echo "$TITLE" | grep -qiE '验收测试|全量回归|acceptance.test'; then
-        PROP_NAME="验收单-v2"; PROP_ID="c43b7f71-691c-48b9-9e58-c7e35ef22bf2"
+        PROP_NAME="验收单"; PROP_ID="c43b7f71-691c-48b9-9e58-c7e35ef22bf2"
         OPTIONS="bb170ba2-74c8-4193-942d-c03687ddc41c:验收通过"
         HAS_QA=true
     elif echo "$TITLE" | grep -qiE 'bug|fix|修复|缺陷'; then
@@ -111,7 +111,7 @@ if [ "$ALL_DONE" = true ]; then
         开发单|Bug单)
             echo "→ Stage ⑥: Rebase merge"
             ;;
-        验收单-v2)
+        验收单)
             echo "验收通过。"
             multica issue comment add "$ISSUE_ID" --content "✅ 验收通过。Task closed. 流程已更新。"
             exit 0

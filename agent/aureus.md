@@ -93,7 +93,7 @@ Property mapping:
 | Refactor | 开发单 | none | leave unset |
 | Trivial (<50 lines) | Bug单 | 开发完成,审查通过 | skip dev+review |
 | Doc/Config | Bug单 | 开发完成,审查通过 | skip dev+review |
-| Acceptance Test | 验收单-v2 | none | leave unset |
+| Acceptance Test | 验收单 | none | leave unset |
 
 ```bash
 # For Trivial/Doc: pre-check first two options
