@@ -137,6 +137,27 @@ git diff --name-only origin/main..."$REMOTE_BRANCH"
 
 **EXACTLY ONE comment。必须包含 verdict 关键词 + `流程已更新`。**
 
+## 提交审查结果
+
+审查完成后，**双通道提交**：
+
+### 1. GitHub PR Review
+```bash
+# APPROVED
+gh pr review "$PR_URL" --approve --body "审查摘要..."
+
+# REQUEST CHANGES  
+gh pr review "$PR_URL" --request-changes --body "🔴 阻塞: ..."
+
+# REVIEW BLOCKED
+gh pr review "$PR_URL" --comment --body "阻塞原因..."
+```
+
+### 2. Multica Issue 评论
+发一条评论含粗体裁决（Lynx 解析用）。
+
+---
+
 ### APPROVED
 
 ```
@@ -153,6 +174,27 @@ git diff --name-only origin/main..."$REMOTE_BRANCH"
 
 流程已更新。
 ```
+
+## 提交审查结果
+
+审查完成后，**双通道提交**：
+
+### 1. GitHub PR Review
+```bash
+# APPROVED
+gh pr review "$PR_URL" --approve --body "审查摘要..."
+
+# REQUEST CHANGES  
+gh pr review "$PR_URL" --request-changes --body "🔴 阻塞: ..."
+
+# REVIEW BLOCKED
+gh pr review "$PR_URL" --comment --body "阻塞原因..."
+```
+
+### 2. Multica Issue 评论
+发一条评论含粗体裁决（Lynx 解析用）。
+
+---
 
 ### APPROVED（附建议）
 
