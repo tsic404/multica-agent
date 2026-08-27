@@ -25,7 +25,7 @@
 5. **无响应 ≥3 → blocked** — 统计委派次数减有效裁决次数
 6. **FE/BE 混合检测** — 同时命中前后端关键词 → 先委派 BE，metadata 标记 `dev_mixed_needs_fe=true`，BE DEV_DONE 后自动委派 FE
 7. **委派前检查依赖** — 读 `前置依赖` text property，全部 TSI must be done
-8. **PR 门禁检查** — 开发单/Bug单推进前检查 PR 可合并性（state=OPEN、无冲突、CI 全绿），不通过则回退至「起始,开发」
+8. **PR 门禁检查** — 开发单/Bug单推进前检查 PR 可合并性（state=OPEN、无冲突、CI 全绿），不通过则回退至「起始,开发」并自动 mention 对应开发 agent 修复（自动唤醒，不等待人工；如需人工在看板上可见则保留 comment 记录）
 9. **SPLIT_DONE 后不要追问子 issue** — Aureus 已在「任务拆分完成」评论里创建子 issue（挂 Squad, backlog）。Lynx 只提升 backlog → todo，不再要求 Aureus 创建。
 
 ## 开工
@@ -195,18 +195,29 @@ case "$VERDICT" in
 
         # PR 门禁检查（铁律 #8：开发单/Bug单推进前检查 PR 可合并性）
         if [ "$PROP_NAME" = "开发单" ] || [ "$PROP_NAME" = "Bug单" ]; then
+            # 确定开发 MENTION（门禁失败时自动唤醒开发修复；与委派段 FE/BE 判定一致）
+            ISSUE_TEXT=$(printf '%s\n' "$ISSUE_JSON" | jq -r '[.title, .description] | join(" ")')
+            IS_FE=$(echo "$ISSUE_TEXT" | grep -qiE 'ui|前端|frontend|browser|chart|solara|css|组件|渲染|页面|布局' && echo true || echo false)
+            IS_BE=$(echo "$ISSUE_TEXT" | grep -qiE 'api|后端|backend|server|数据库|database|sql|migration|schema|cli|命令行|service|daemon' && echo true || echo false)
+            if [ "$IS_FE" = true ] && [ "$IS_BE" = true ]; then
+                DEV_MENTION="[@Vulcan](mention://agent/8101581e-c072-48bd-92d7-5d1d49d91035)"
+            elif [ "$IS_FE" = true ]; then
+                DEV_MENTION="[@Vexel](mention://agent/936ed413-4df8-4609-ad04-ac1bce169971)"
+            else
+                DEV_MENTION="[@Vulcan](mention://agent/8101581e-c072-48bd-92d7-5d1d49d91035)"
+            fi
             DEV_COMMENT=$(printf '%s\n' "$COMMENTS_JSON" | jq -r '[.[] | select(.content | contains("Development complete"))] | last | .content // ""')
             PR_URL=$(printf '%s\n' "$DEV_COMMENT" | grep -oP 'https://github\.com/\S+/pull/\d+' | head -1)
             if [ -z "$PR_URL" ]; then
                 multica issue property set "$ISSUE_ID" --name "$PROP_NAME" --value "起始,开发"
-                multica issue comment add "$ISSUE_ID" --content "⛔ PR 门禁阻塞：找不到 PR URL。已回退至开发，请重新提交。流程已更新。"
+                multica issue comment add "$ISSUE_ID" --content "${DEV_MENTION} ⛔ PR 门禁阻塞：找不到 PR URL。已回退至开发，请提交有效 PR 后重新提交。流程已更新。"
                 echo "⛔ PR blocked: no PR URL found → 回退到开发"
                 exit 1
             fi
             PR_JSON=$(gh pr view "$PR_URL" --json mergeable,state,statusCheckRollup 2>/dev/null || echo "")
             if [ -z "$PR_JSON" ] || [ "$PR_JSON" = "null" ]; then
                 multica issue property set "$ISSUE_ID" --name "$PROP_NAME" --value "起始,开发"
-                multica issue comment add "$ISSUE_ID" --content "⛔ PR 门禁阻塞：无法获取 PR 状态（网络或权限问题，URL: $PR_URL）。已回退至开发，请确认 PR 状态后重新提交。流程已更新。"
+                multica issue comment add "$ISSUE_ID" --content "${DEV_MENTION} ⛔ PR 门禁阻塞：无法获取 PR 状态（网络或权限问题，URL: $PR_URL）。已回退至开发，请确认 PR 状态后重新提交。流程已更新。"
                 echo "⛔ PR blocked: gh pr view 失败"
                 exit 1
             fi
@@ -223,7 +234,7 @@ case "$VERDICT" in
             fi
             if [ -n "$BLOCK_REASON" ]; then
                 multica issue property set "$ISSUE_ID" --name "$PROP_NAME" --value "起始,开发"
-                multica issue comment add "$ISSUE_ID" --content "⛔ PR 门禁阻塞：$BLOCK_REASON。已回退至开发，请修复后重新提交。流程已更新。"
+                multica issue comment add "$ISSUE_ID" --content "${DEV_MENTION} ⛔ PR 门禁阻塞：$BLOCK_REASON。已回退至开发，请在该分支修复后重新提交。流程已更新。"
                 echo "⛔ PR blocked: $BLOCK_REASON → 回退到开发"
                 exit 1
             fi
