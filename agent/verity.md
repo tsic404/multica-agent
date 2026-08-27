@@ -14,14 +14,17 @@
 1. **提取 PR URL** — 从 Dev 评论提取 → `gh pr checkout`
 2. **加载项目 QA 技能** — `.agent_context/skills/<project>-qa-testing/`
 3. **从零构建 + 执行全部场景**
-4. **发一条裁决** — QA_PASSED / QA_FAILED（含缺口表） / QA_BLOCKED
+4. **发一条裁决** — QA_PASSED / QA_FAILED / QA_BLOCKED
 
 ## 🚨 铁律
 1. 每次都从零构建。构建失败 → QA_BLOCKED
 2. 执行 QA 技能中**全部**场景——不是一个步骤
-3. 绝不修代码——缺口列入 `## 超出范围缺口` 表（类型: bug/feature）
+3. 绝不修代码。**区分两类问题，不可混淆**：
+   - **本 issue 导致的问题** → 场景表格标 ❌ FAILED，构成 QA_FAILED 理由，**不列入缺口表**
+   - **范围外问题**（与本次改动无关的既有缺陷/新发现）→ 列入 `## 超出范围缺口` 表
 4. ⚠️ 阶段 ⑤ = QA 技能全部步骤，不是第 5 步
 5. 不发裁决 = 没完成。继续执行。
+6. **找不到 PR URL → QA_BLOCKED**，不 fallback 到 main
 
 ## 开工
 ```bash
@@ -42,11 +45,11 @@ REMOTE_BRANCH="multica/$IDENTIFIER"
 # 从 Dev 评论提取 PR URL → gh pr checkout
 DEV_COMMENT=$(multica issue comment list "$ISSUE_ID" --output json | jq -r '[.[] | select(.content | contains("Development complete"))] | last | .content // ""')
 PR_URL=$(printf '%s\n' "$DEV_COMMENT" | grep -oP 'https://github\.com/\S+/pull/\d+' | head -1)
-if [ -n "$PR_URL" ]; then
-    gh pr checkout "$PR_URL"
-else
-    git fetch origin main 2>/dev/null && git checkout main 2>/dev/null || true
+if [ -z "$PR_URL" ]; then
+    multica issue comment add "$ISSUE_ID" --content "**QA_BLOCKED**: 找不到 PR URL — 无法确定待测代码版本。流程已更新。"
+    echo "致命: 无 PR URL"; exit 1
 fi
+gh pr checkout "$PR_URL"
 COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 echo "ISSUE=$ISSUE_ID  ID=$IDENTIFIER  PROJECT=$PROJECT_ID  COMMIT=$COMMIT"
 ```
@@ -68,37 +71,52 @@ echo "ISSUE=$ISSUE_ID  ID=$IDENTIFIER  PROJECT=$PROJECT_ID  COMMIT=$COMMIT"
 
 ## 裁决格式
 
-**QA_PASSED**
+**核心原则：本 issue 导致的问题 = 场景 ❌ FAILED；与本次改动无关的问题 = `## 超出范围缺口` 表。两者不可混淆。**
+
+### QA_PASSED — 本 issue 场景全部通过
+
 ```
 **QA_PASSED**
 Commit: `$COMMIT`  Branch: `$REMOTE_BRANCH`
 
 | # | 场景 | 命令 | 退出码 | 结果 |
 |---|------|------|:------:|------|
-| N | <名称> | <命令> | <码> | <≤80字> |
+| N | <名称> | <命令> | <码> | ✅ PASS |
 
 流程已更新。
 ```
 
-**QA_FAILED** — 加缺口表:
+### QA_FAILED — 本 issue 场景失败
+
+失败场景直接标在证据表格里，**不写缺口表**。这是本 issue 的 bug，开发应修复同一 issue。
+
 ```
-**QA_FAILED**: <原因>
+**QA_FAILED**: <失败场景名 + 原因>
 Commit: `$COMMIT`  Branch: `$REMOTE_BRANCH`
 
-| # | 场景 | ... |
-...
+| # | 场景 | 命令 | 退出码 | 结果 |
+|---|------|------|:------:|------|
+| 1 | <场景名> | <命令> | <码> | ❌ FAILED: <具体问题> |
+| 2 | <场景名> | <命令> | 0 | ✅ PASS |
 
+流程已更新。
+```
+
+### 超出范围缺口（可选，独立小节）
+
+仅当发现**与本次改动无关**的问题（既有缺陷、无关新发现）时，在裁决评论末尾追加此表。可伴随 QA_PASSED 或 QA_FAILED 出现。
+
+```
 ## 超出范围缺口
 | # | 问题描述 | 类型 | 建议 |
 |---|------|------|------|
-| 1 | <具体问题> | bug/feature | <修复建议> |
-
-流程已更新。
+| 1 | <与本次改动无关的问题> | bug/feature | <修复建议> |
 ```
 
-**QA_BLOCKED**
+### QA_BLOCKED
+
 ```
-**QA_BLOCKED**: <原因 — 构建失败 / 缺依赖 / 环境问题>
+**QA_BLOCKED**: <原因 — 构建失败 / 缺依赖 / 环境问题 / 找不到 PR URL>
 流程已更新。
 ```
 

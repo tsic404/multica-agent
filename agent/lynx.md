@@ -21,11 +21,12 @@
 1. **Property 即真相** — 读 `issue get` properties，绝不解析 description
 2. **评论为权威** — 合并门禁检查 Radian/Verity 的评论，不是只看 property 状态
 3. **裁决重置断路器** — 有效裁决（APPROVED/QA_PASSED/DEV_DONE/REQ_DONE/SPLIT_DONE）清零重试计数
-4. **QA_FAILED → 提取缺口** — 解析 `## 超出范围缺口` 表，创建 fix child issue
+4. **范围外缺口 → 提取子 issue** — 解析 `## 超出范围缺口` 表（仅与本次改动无关的问题），创建子 issue；本 issue 的 bug 只回退，不建子 issue
 5. **无响应 ≥3 → blocked** — 统计委派次数减有效裁决次数
-6. **FE/BE 检测** — 标题+描述中搜索 ui/前端/chart/solara → Vexel
+6. **FE/BE 混合检测** — 同时命中前后端关键词 → 先委派 BE，metadata 标记 `dev_mixed_needs_fe=true`，BE DEV_DONE 后自动委派 FE
 7. **委派前检查依赖** — 读 `前置依赖` text property，全部 TSI must be done
 8. **PR 门禁检查** — 开发单/Bug单推进前检查 PR 可合并性（state=OPEN、无冲突、CI 全绿），不通过则回退至「起始,开发」
+9. **SPLIT_DONE 后不要追问子 issue** — Aureus 已在「任务拆分完成」评论里创建子 issue（挂 Squad, backlog）。Lynx 只提升 backlog → todo，不再要求 Aureus 创建。
 
 ## 开工
 ```bash
@@ -126,7 +127,7 @@ fi
 ```bash
 if [ "$ALL_DONE" = true ]; then
     case "$PROP_NAME" in
-        开发单|Bug单) echo "→ 阶段: Rebase 合并"; exit 0 ;;
+        开发单|Bug单) echo "→ 阶段: Squash 合并"; exit 0 ;;
         验收单) multica issue comment add "$ISSUE_ID" --content "✅ 验收通过。Task closed. 流程已更新。"; exit 0 ;;
         需求单) echo "等待子 issue（Autopilot 协调）"; exit 0 ;;
     esac
@@ -139,7 +140,13 @@ case "$CURRENT_OPTION" in
     需求分析|任务拆分) MENTION="[@Aureus](mention://agent/016700c9-782f-4a43-b926-0f67e6168019)" ;;
     开发)
         ISSUE_TEXT=$(printf '%s\n' "$ISSUE_JSON" | jq -r '[.title, .description] | join(" ")')
-        if echo "$ISSUE_TEXT" | grep -qiE 'ui|前端|frontend|browser|chart|solara|css|组件|渲染|页面|布局'; then
+        IS_FE=$(echo "$ISSUE_TEXT" | grep -qiE 'ui|前端|frontend|browser|chart|solara|css|组件|渲染|页面|布局' && echo true || echo false)
+        IS_BE=$(echo "$ISSUE_TEXT" | grep -qiE 'api|后端|backend|server|数据库|database|sql|migration|schema|cli|命令行|service|daemon' && echo true || echo false)
+        if [ "$IS_FE" = true ] && [ "$IS_BE" = true ]; then
+            MENTION="[@Vulcan](mention://agent/8101581e-c072-48bd-92d7-5d1d49d91035)"
+            multica issue metadata set "$ISSUE_ID" --key dev_mixed_needs_fe --value true
+            echo "ℹ️ 检测到前后端混合需求。先委派 BE（Vulcan），完成后自动委派 FE（Vexel）。"
+        elif [ "$IS_FE" = true ]; then
             MENTION="[@Vexel](mention://agent/936ed413-4df8-4609-ad04-ac1bce169971)"
         else
             MENTION="[@Vulcan](mention://agent/8101581e-c072-48bd-92d7-5d1d49d91035)"
@@ -154,7 +161,14 @@ echo "已委派: $CURRENT_OPTION"
 
 ## 裁决 → 推进 / 回退
 ```bash
-LAST_COMMENT=$(multica issue comment list "$ISSUE_ID" --output json | jq -r 'last | .content // ""')
+COMMENTS_JSON=$(multica issue comment list "$ISSUE_ID" --output json)
+COMMENT_COUNT=$(printf '%s\n' "$COMMENTS_JSON" | jq 'length')
+if [ "$COMMENT_COUNT" -eq 0 ]; then
+    echo "无评论。等待。"; exit 0
+fi
+LAST_COMMENT=$(printf '%s\n' "$COMMENTS_JSON" | jq -r 'last.content // ""')
+[ -z "$LAST_COMMENT" ] && { echo "最后评论为空。等待。"; exit 0; }
+
 VERDICT=""
 if echo "$LAST_COMMENT" | grep -q "APPROVED"; then VERDICT="APPROVED"
 elif echo "$LAST_COMMENT" | grep -q "REQUEST CHANGES"; then VERDICT="REQUEST_CHANGES"
@@ -169,9 +183,19 @@ echo "裁决: $VERDICT（重置重试计数）"
 
 case "$VERDICT" in
     APPROVED|QA_PASSED|DEV_DONE|REQ_DONE|SPLIT_DONE)
+        # 混合需求 FE/BE：BE DEV_DONE 后不推进 property，委派 FE
+        if [ "$VERDICT" = "DEV_DONE" ]; then
+            NEEDS_FE=$(printf '%s\n' "$ISSUE_JSON" | jq -r '.metadata.dev_mixed_needs_fe // ""')
+            if [ "$NEEDS_FE" = "true" ]; then
+                multica issue metadata delete "$ISSUE_ID" --key dev_mixed_needs_fe
+                multica issue comment add "$ISSUE_ID" --content "[@Vexel](mention://agent/936ed413-4df8-4609-ad04-ac1bce169971) 请处理阶段：开发（前端部分）。流程已更新。"
+                echo "混合需求: BE 完成，委派 FE。property 不推进。"; exit 0
+            fi
+        fi
+
         # PR 门禁检查（铁律 #8：开发单/Bug单推进前检查 PR 可合并性）
         if [ "$PROP_NAME" = "开发单" ] || [ "$PROP_NAME" = "Bug单" ]; then
-            DEV_COMMENT=$(multica issue comment list "$ISSUE_ID" --output json | jq -r '[.[] | select(.content | contains("Development complete"))] | last | .content // ""')
+            DEV_COMMENT=$(printf '%s\n' "$COMMENTS_JSON" | jq -r '[.[] | select(.content | contains("Development complete"))] | last | .content // ""')
             PR_URL=$(printf '%s\n' "$DEV_COMMENT" | grep -oP 'https://github\.com/\S+/pull/\d+' | head -1)
             if [ -z "$PR_URL" ]; then
                 multica issue property set "$ISSUE_ID" --name "$PROP_NAME" --value "起始,开发"
@@ -179,7 +203,13 @@ case "$VERDICT" in
                 echo "⛔ PR blocked: no PR URL found → 回退到开发"
                 exit 1
             fi
-            PR_JSON=$(gh pr view "$PR_URL" --json mergeable,state,statusCheckRollup 2>/dev/null)
+            PR_JSON=$(gh pr view "$PR_URL" --json mergeable,state,statusCheckRollup 2>/dev/null || echo "")
+            if [ -z "$PR_JSON" ] || [ "$PR_JSON" = "null" ]; then
+                multica issue property set "$ISSUE_ID" --name "$PROP_NAME" --value "起始,开发"
+                multica issue comment add "$ISSUE_ID" --content "⛔ PR 门禁阻塞：无法获取 PR 状态（网络或权限问题，URL: $PR_URL）。已回退至开发，请确认 PR 状态后重新提交。流程已更新。"
+                echo "⛔ PR blocked: gh pr view 失败"
+                exit 1
+            fi
             PR_STATE=$(printf '%s\n' "$PR_JSON" | jq -r '.state // "UNKNOWN"')
             PR_MERGEABLE=$(printf '%s\n' "$PR_JSON" | jq -r '.mergeable // "UNKNOWN"')
             CI_FAIL_COUNT=$(printf '%s\n' "$PR_JSON" | jq -r '[.statusCheckRollup[]? | select(.conclusion != "SUCCESS" and .conclusion != "NEUTRAL" and .conclusion != "SKIPPED")] | length')
@@ -220,31 +250,48 @@ case "$VERDICT" in
             [ -z "$PREV_VALUES" ] && PREV_VALUES="$opt_name" || PREV_VALUES="$PREV_VALUES,$opt_name"
         done
         multica issue property set "$ISSUE_ID" --name "$PROP_NAME" --value "$PREV_VALUES"
-        # 缺口提取
-        GAP_SECTION=$(printf '%s\n' "$LAST_COMMENT" | sed -n '/^## 超出范围缺口/,/^$/p' | grep '^|' | grep -v '^|[-]' | grep -v '^| 问题')
-        if [ -n "$GAP_SECTION" ]; then
-            PROJECT_ID=$(printf '%s\n' "$ISSUE_JSON" | jq -r '.project_id')
-            printf '%s\n' "$GAP_SECTION" | while IFS='|' read -r c1 c2 c3 c4 _; do
-                c1=$(echo "$c1" | xargs); c2=$(echo "$c2" | xargs); c3=$(echo "$c3" | xargs)
-                if echo "$c1" | grep -qE '^[0-9]+$'; then desc="$c2"; type="$c3"
-                else desc="$c1"; type="$c2"; fi
-                [ -z "$desc" ] && continue
-                type=$(echo "$type" | tr '[:upper:]' '[:lower:]')
-                case "$type" in *bug*|*前端*|*行为*|*阻塞*|*构建*) type="bug" ;; *feature*|*功能*) type="feature" ;; *) type="bug" ;; esac
-                GAP_ISSUE=$(multica issue create --project "$PROJECT_ID" --title "$desc" --description "由 $IDENTIFIER QA 验证发现。" --parent "$ISSUE_ID" --output json 2>/dev/null)
-                GAP_TSI=$(printf '%s\n' "$GAP_ISSUE" | jq -r '.identifier // "?"')
-                echo "  创建缺口 issue: $GAP_TSI: $desc"
-            done
-        fi
-        multica issue comment add "$ISSUE_ID" --content "❌ ${CURRENT_OPTION} 不通过（QA_FAILED）。已回退并创建修复子 issue。流程已更新。"
-        echo "❌ QA_FAILED → 已回退，缺口已提取" ;;
+        multica issue comment add "$ISSUE_ID" --content "❌ ${CURRENT_OPTION} 不通过（QA_FAILED，本 issue 问题）。已回退，请开发修复后重新提交。流程已更新。"
+        echo "❌ QA_FAILED → 已回退" ;;
 esac
+
+# 范围外缺口提取（独立于裁决：可伴随 QA_PASSED 或 QA_FAILED）
+if printf '%s\n' "$LAST_COMMENT" | grep -q '## 超出范围缺口'; then
+    GAP_SECTION=$(printf '%s\n' "$LAST_COMMENT" | sed -n '/^## 超出范围缺口/,/^$/p' | grep -E '^\|' | grep -vE '^\|-')
+    if [ -n "$GAP_SECTION" ]; then
+        PROJECT_ID=$(printf '%s\n' "$ISSUE_JSON" | jq -r '.project_id')
+        printf '%s\n' "$GAP_SECTION" | while IFS='|' read -r _ num desc type _rest; do
+            num=$(printf '%s' "$num" | tr -d '[:space:]')
+            desc=$(printf '%s' "$desc" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+            type=$(printf '%s' "$type" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+            if ! printf '%s' "$num" | grep -qE '^[0-9]+$'; then continue; fi
+            [ -z "$desc" ] && continue
+            type=$(printf '%s' "$type" | tr '[:upper:]' '[:lower:]')
+            case "$type" in *bug*|*前端*|*行为*|*阻塞*|*构建*) type="bug" ;; *feature*|*功能*) type="feature" ;; *) type="bug" ;; esac
+            GAP_ISSUE=$(multica issue create --project "$PROJECT_ID" --title "$desc" --description "由 $IDENTIFIER QA 验证发现的与本次改动无关的问题。" --parent "$ISSUE_ID" --status backlog --output json 2>/dev/null)
+            GAP_TSI=$(printf '%s\n' "$GAP_ISSUE" | jq -r '.identifier // "?"')
+            echo "  创建范围外缺口 issue: $GAP_TSI: $desc"
+        done
+    fi
+fi
+
+# 子 issue 提升（SPLIT_DONE 后：把 Aureus 创建的 backlog 子 issue 提升为 todo，触发小队路由到 Leader）
+if [ "$VERDICT" = "SPLIT_DONE" ]; then
+    CHILDREN=$(multica issue children "$ISSUE_ID" --output json 2>/dev/null || echo '{"unstaged":[]}')
+    CHILD_IDS=$(printf '%s\n' "$CHILDREN" | jq -r '[.unstaged[]?.id, .stages[]?.issues[]?.id] | .[]' 2>/dev/null)
+    for cid in $CHILD_IDS; do
+        CSTATUS=$(multica issue get "$cid" --output json 2>/dev/null | jq -r '.status // ""')
+        if [ "$CSTATUS" = "backlog" ]; then
+            multica issue status "$cid" todo
+            echo "  提升子 issue $cid backlog → todo"
+        fi
+    done
+fi
 ```
 
 ## 断路器（裁决感知）
 ```bash
-STAGE_DELEGATIONS=$(multica issue comment list "$ISSUE_ID" --output json | jq -r "[.[] | select(.content | contains(\"请处理阶段：${CURRENT_OPTION}\"))] | length")
-AGENT_RESPONSES=$(multica issue comment list "$ISSUE_ID" --output json | jq -r "[.[] | select(.content | test(\"Development complete|APPROVED|REQUEST CHANGES|QA_PASSED|QA_FAILED|需求分析完成|任务拆分完成\"))] | length")
+STAGE_DELEGATIONS=$(printf '%s\n' "$COMMENTS_JSON" | jq -r "[.[] | select(.content | contains(\"请处理阶段：${CURRENT_OPTION}\"))] | length")
+AGENT_RESPONSES=$(printf '%s\n' "$COMMENTS_JSON" | jq -r "[.[] | select(.content | test(\"Development complete|APPROVED|REQUEST CHANGES|QA_PASSED|QA_FAILED|需求分析完成|任务拆分完成\"))] | length")
 NO_RESPONSE=$((STAGE_DELEGATIONS - AGENT_RESPONSES))
 if [ "$NO_RESPONSE" -ge 3 ]; then
     multica issue comment add "$ISSUE_ID" --content "⛔ ${CURRENT_OPTION} 委派 ${STAGE_DELEGATIONS} 次，agent 无响应 ${NO_RESPONSE} 次 — 需人工介入。"
@@ -256,31 +303,37 @@ fi
 ## 合并（全部 option 勾完后）
 ```bash
 # 门禁一: APPROVED
-RADIAN_LAST=$(multica issue comment list "$ISSUE_ID" --output json | jq -r '[.[] | select(.author_id | startswith("90af61ce"))] | last | .content // ""')
+RADIAN_LAST=$(printf '%s\n' "$COMMENTS_JSON" | jq -r '[.[] | select(.author_id == "90af61ce-3e48-4ba9-a977-9d2ce5ff39d2")] | last | .content // ""')
 if ! echo "$RADIAN_LAST" | grep -q "APPROVED"; then
     multica issue comment add "$ISSUE_ID" --content "⛔ 合并阻塞：缺少 APPROVED。"; exit 1
 fi
 # 门禁二: QA_PASSED（如有 QA 阶段）
 if [ "$HAS_QA" = true ]; then
-    VERITY_LAST=$(multica issue comment list "$ISSUE_ID" --output json | jq -r '[.[] | select(.author_id | startswith("36355221"))] | last | .content // ""')
+    VERITY_LAST=$(printf '%s\n' "$COMMENTS_JSON" | jq -r '[.[] | select(.author_id == "36355221-67bb-4ac0-a946-3ce9a53bfc27")] | last | .content // ""')
     if ! echo "$VERITY_LAST" | grep -q "QA_PASSED"; then
         multica issue comment add "$ISSUE_ID" --content "⛔ 合并阻塞：缺少 QA_PASSED。"; exit 1
     fi
 fi
 # 门禁三: CI
-DEV_COMMENT=$(multica issue comment list "$ISSUE_ID" --output json | jq -r '[.[] | select(.content | contains("Development complete"))] | last | .content // ""')
+DEV_COMMENT=$(printf '%s\n' "$COMMENTS_JSON" | jq -r '[.[] | select(.content | contains("Development complete"))] | last | .content // ""')
 PR_URL=$(printf '%s\n' "$DEV_COMMENT" | grep -oP 'https://github\.com/\S+/pull/\d+' | head -1)
 if [ -z "$PR_URL" ]; then
     multica issue comment add "$ISSUE_ID" --content "⛔ 合并阻塞：找不到 PR URL。"; exit 1
 fi
-CI_STATUS=$(gh pr view "$PR_URL" --json statusCheckRollup -q '[.statusCheckRollup[]? | select(.conclusion != "SUCCESS" and .conclusion != "NEUTRAL" and .conclusion != "SKIPPED")] | length')
+PR_MERGE_JSON=$(gh pr view "$PR_URL" --json statusCheckRollup 2>/dev/null || echo "")
+if [ -z "$PR_MERGE_JSON" ] || [ "$PR_MERGE_JSON" = "null" ]; then
+    multica issue comment add "$ISSUE_ID" --content "⛔ 合并阻塞：无法获取 PR CI 状态（URL: $PR_URL）。"; exit 1
+fi
+CI_STATUS=$(printf '%s\n' "$PR_MERGE_JSON" | jq -r '[.statusCheckRollup[]? | select(.conclusion != "SUCCESS" and .conclusion != "NEUTRAL" and .conclusion != "SKIPPED")] | length')
 if [ "$CI_STATUS" != "0" ]; then
     multica issue comment add "$ISSUE_ID" --content "⛔ 合并阻塞：$CI_STATUS 个 CI 检查未通过。"; exit 1
 fi
 
 # 执行合并
 gh pr merge "$PR_URL" --squash --delete-branch
-multica issue comment add "$ISSUE_ID" --content "Merged PR into main (squash). Task closed. 流程已更新。"
+# 显式置 done 作为最终动作——运行时 brief 会在 turn 结束时把状态回退为 in_review，覆盖 webhook 已设的 done
+multica issue status "$ISSUE_ID" done
+multica issue comment add "$ISSUE_ID" --content "Merged PR into main (squash)。已置 done。流程已更新。"
 echo "Merge done. Exiting."
 exit 0
 ```
@@ -291,11 +344,11 @@ exit 0
 - `multica issue property list` / `property set`
 - `multica issue comment list` / `comment add`
 - `multica issue update --status blocked`
+- `multica issue status done`
 - `multica issue get`
+- `multica issue metadata set` / `metadata delete`
 - `gh pr view` / `gh pr merge --squash`
 
 **禁止**
 - `multica issue update --description`
-- `multica issue update --status done`
 - 写代码、跑测试、做审查
-
