@@ -34,20 +34,122 @@ mkdir -p /tmp/torrentfs-test-state
 
 ### 测试种子准备
 
-准备至少以下类型的 .torrent 文件：
-- 小文件种子（单文件 < 1MB，如文本/图片）
-- 大文件种子（单文件 > 100MB，如 Linux ISO）
-- 多文件种子（3+ 文件，含子目录结构）
-- 无效种子（手动创建非法文件，或空文件）
+种子准备统一使用两个来源，不要依赖任何外部路径：
 
-如项目仓库中有现成种子文件，直接复用；否则从公开 tracker 下载或自行创建。
+**1. selfseed 离线 swarm（内容读取场景专用，有真实做种者）**
 
-**项目种子文件路径**：`/workspace/torrentfs/*.torrent`（含 10 个种子，包括 Ubuntu ISO）
+仓库自带一键脚本 `ci/run_self_seed_env.sh`，在本机自建一个离线 swarm（tracker + 一个做种者），产物固定为单文件种子 `selfseed.torrent`（4 MiB 全 `a` payload，16 pieces × 256 KiB）。
 
-列出可用种子：
 ```bash
-ls /workspace/torrentfs/*.torrent
+cd <repo>
+./ci/run_self_seed_env.sh            # 构建并启动 tracker+seeder，保持前台运行
+# 产物：ci/selfseed/output/selfseed.torrent
+#       ci/selfseed/output/payload.txt
+#       ci/selfseed/output/tracker.url
 ```
+
+该脚本内部写死 `info.name="selfseed"`，内部文件路径为 `<mount>/data/<source_path>/selfseed.torrent/selfseed`（目录名是完整种子文件名，含 `.torrent` 后缀）。
+**该脚本是前台进程，必须先启动它（另开终端保持运行），`ci/selfseed/output/selfseed.torrent` 生成后才能并入 `$SEED_DIR`——顺序不能颠倒。**
+内容读取场景必须使用这个种子：命名种子没有做种者，读内容约 40s 后返回 ENODATA（No seeder connected），无法完成下载。
+
+**2. Docker 变体**
+
+`run_self_seed_env.sh` 不透传 `--announce-host` / `--tracker-bind`，Docker 内运行的 torrentfs 无法直连宿主机 loopback。此时直接跑二进制（`<host 可达 IP>` 为容器可达的宿主机地址）：
+
+```bash
+cargo build --locked --release --example torrentfs-selfseed-env --quiet
+target/release/examples/torrentfs-selfseed-env \
+  --tracker-bind 0.0.0.0 --announce-host <host 可达 IP> \
+  --payload ci/selfseed/output/payload.txt \
+  --torrent-out ci/selfseed/output/selfseed.torrent \
+  --url-out ci/selfseed/output/tracker.url
+```
+
+`--payload` / `--torrent-out` / `--url-out` 显式指定，避免默认相对路径 `payload.txt` 在仓库根找不到文件；产物与脚本相同。场景 12 的容器内容读取需要用这种 announce 可达的种子（或 `docker run --network host`，见场景 12）。
+
+**3. 命名种子：内嵌 python3 生成器 + 种子目录合并（无做种者）**
+
+下面脚本纯标准库、确定性产出命名种子。这些种子只用于验证目录结构、文件列表、`.stats` 格式等**不读取内容**的场景。脚本同时把 selfseed 产物并入 `$SEED_DIR`：
+
+```bash
+SEED_DIR=/tmp/torrentfs-seeds
+mkdir -p "$SEED_DIR"
+
+# 1) selfseed 产物并入（必须先已运行 run_self_seed_env.sh）
+cp <repo>/ci/selfseed/output/selfseed.torrent "$SEED_DIR/"
+
+# 2) 命名种子：python3 内联执行，标准库即可，不依赖外部脚本文件
+python3 - "$SEED_DIR" <<'PYEOF'
+import sys
+import hashlib
+
+
+def bencode(x):
+    if isinstance(x, int):
+        return b"i" + str(x).encode() + b"e"
+    if isinstance(x, bytes):
+        return str(len(x)).encode() + b":" + x
+    if isinstance(x, str):
+        b = x.encode()
+        return str(len(b)).encode() + b":" + b
+    if isinstance(x, list):
+        return b"l" + b"".join(bencode(i) for i in x) + b"e"
+    if isinstance(x, dict):
+        out = bytearray(b"d")
+        for k in sorted(x.keys()):
+            out += bencode(k)
+            out += bencode(x[k])
+        out += b"e"
+        return bytes(out)
+    raise TypeError(type(x))
+
+
+def build_torrent(path, name, entries):
+    piece_len = 262144
+    total = sum(s for _, s in entries)
+    full, rem = total // piece_len, total % piece_len
+    data = b"a" * (full * piece_len) + (b"b" * rem if rem else b"")
+    pieces = bytearray()
+    pos = 0
+    while pos < len(data):
+        pieces += hashlib.sha1(data[pos:pos + piece_len]).digest()
+        pos += piece_len
+    files = [{"length": s, "path": list(p)} for p, s in entries]
+    info = {"name": name, "piece length": piece_len, "pieces": bytes(pieces)}
+    if len(files) == 1:
+        info["length"] = files[0]["length"]
+    else:
+        info["files"] = files
+    with open(path, "wb") as f:
+        f.write(bencode({"announce": "http://127.0.0.1:16969/announce", "info": info}))
+
+
+out = sys.argv[1]
+build_torrent(f"{out}/ubuntu.iso.torrent", "ubuntu.iso", [(("ubuntu.iso",), 4194304)])
+build_torrent(f"{out}/debian.torrent", "debian.iso", [(("debian.iso",), 1048576)])
+build_torrent(f"{out}/fedora.torrent", "fedora.iso", [(("fedora.iso",), 524288)])
+build_torrent(f"{out}/freebsd.torrent", "freebsd.iso", [(("freebsd.iso",), 262144)])
+build_torrent(f"{out}/movie.torrent", "movie",
+              [(("file_A",), 1048576),
+               (("file_B",), 262144),
+               (("subdir", "file_C"), 524288)])
+PYEOF
+
+ls -1 "$SEED_DIR"
+```
+
+**种子 ↔ 场景映射**：
+
+| 种子 | info.name | 大小 | 用途 |
+|------|-----------|------|------|
+| selfseed.torrent | selfseed | 4 MiB（16×256 KiB） | 所有内容读取场景（Peers>0、dd/cat、缓存） |
+| ubuntu.iso.torrent | ubuntu.iso | 4 MiB | 单文件结构/元数据、Pieces 格式 |
+| debian.torrent | debian.iso | 1 MiB | 单文件结构、小文件 |
+| fedora.torrent | fedora.iso | 512 KiB | 单文件结构、元数据 churn |
+| freebsd.torrent | freebsd.iso | 256 KiB | 单文件结构 |
+| movie.torrent | movie | 多文件 | 多文件结构、选择性下载 |
+
+后续场景中的 `cp "$SEED_DIR"/*.torrent` 均指向该目录。
 
 ### 环境清理
 
@@ -87,7 +189,7 @@ mkdir -p /tmp/torrentfs-test-mnt /tmp/torrentfs-test-state
 
 ```bash
 # 用户操作：把种子放进 metadata
-cp ubuntu.iso.torrent /tmp/torrentfs-test-mnt/metadata/
+cp "$SEED_DIR/ubuntu.iso.torrent" /tmp/torrentfs-test-mnt/metadata/
 
 # 用户期望：data/ 下出现对应目录
 ls /tmp/torrentfs-test-mnt/data/
@@ -95,10 +197,10 @@ ls /tmp/torrentfs-test-mnt/data/
 
 # 用户期望：进入目录看到文件
 ls -la /tmp/torrentfs-test-mnt/data/ubuntu.iso.torrent/
-# → ubuntu-25.10-desktop-amd64.iso  （文件名、大小正确）
+# → ubuntu.iso  （文件名、大小正确）
 
 # 用户期望：文件大小合理
-stat /tmp/torrentfs-test-mnt/data/ubuntu.iso.torrent/ubuntu-25.10-desktop-amd64.iso
+stat /tmp/torrentfs-test-mnt/data/ubuntu.iso.torrent/ubuntu.iso
 ```
 
 **检查要点**：
@@ -121,13 +223,13 @@ mkdir -p /tmp/torrentfs-test-mnt/metadata/os/linux
 mkdir -p /tmp/torrentfs-test-mnt/metadata/media/movies
 
 # 用户操作：分别放入种子
-cp ubuntu.torrent /tmp/torrentfs-test-mnt/metadata/os/linux/
-cp debian.torrent /tmp/torrentfs-test-mnt/metadata/os/linux/
-cp movie.torrent /tmp/torrentfs-test-mnt/metadata/media/movies/
+cp "$SEED_DIR/ubuntu.iso.torrent" /tmp/torrentfs-test-mnt/metadata/os/linux/
+cp "$SEED_DIR/debian.torrent" /tmp/torrentfs-test-mnt/metadata/os/linux/
+cp "$SEED_DIR/movie.torrent" /tmp/torrentfs-test-mnt/metadata/media/movies/
 
 # 用户期望：data/ 下镜像相同结构
 ls /tmp/torrentfs-test-mnt/data/os/linux/
-# → ubuntu.torrent/  debian.torrent/
+# → ubuntu.iso.torrent/  debian.torrent/
 
 ls /tmp/torrentfs-test-mnt/data/media/movies/
 # → movie.torrent/
@@ -145,7 +247,7 @@ ls /tmp/torrentfs-test-mnt/data/media/movies/
 
 ```bash
 # 用户操作：重命名种子
-mv /tmp/torrentfs-test-mnt/metadata/os/linux/ubuntu.torrent \
+mv /tmp/torrentfs-test-mnt/metadata/os/linux/ubuntu.iso.torrent \
    /tmp/torrentfs-test-mnt/metadata/os/linux/ubuntu-25.10.torrent
 
 # 用户期望：data/ 下对应变化
@@ -176,9 +278,9 @@ ls /tmp/torrentfs-test-mnt/data/os/linux/
 # 准备：创建多级目录结构并放入种子
 mkdir -p /tmp/torrentfs-test-mnt/metadata/cat-a
 mkdir -p /tmp/torrentfs-test-mnt/metadata/cat-b
-cp /workspace/torrentfs/ubuntu.iso.torrent /tmp/torrentfs-test-mnt/metadata/cat-a/
-cp /workspace/torrentfs/debian.torrent /tmp/torrentfs-test-mnt/metadata/cat-a/
-cp /workspace/torrentfs/fedora.torrent /tmp/torrentfs-test-mnt/metadata/
+cp "$SEED_DIR/ubuntu.iso.torrent" /tmp/torrentfs-test-mnt/metadata/cat-a/
+cp "$SEED_DIR/debian.torrent" /tmp/torrentfs-test-mnt/metadata/cat-a/
+cp "$SEED_DIR/fedora.torrent" /tmp/torrentfs-test-mnt/metadata/
 
 # 1. 从根目录移动到子目录
 mv /tmp/torrentfs-test-mnt/metadata/fedora.torrent    /tmp/torrentfs-test-mnt/metadata/cat-b/
@@ -228,7 +330,7 @@ ls /tmp/torrentfs-test-mnt/data/cat-a/ 2>&1
 # 期望：空目录或无此目录
 
 # 8. 同名移动（覆盖）—— 同一目录下同种子名
-cp /workspace/torrentfs/ubuntu.iso.torrent /tmp/torrentfs-test-mnt/metadata/cat-a/
+cp "$SEED_DIR/ubuntu.iso.torrent" /tmp/torrentfs-test-mnt/metadata/cat-a/
 mv /tmp/torrentfs-test-mnt/metadata/cat-b/ubuntu.iso.torrent    /tmp/torrentfs-test-mnt/metadata/cat-a/ubuntu.iso.torrent 2>&1
 echo "exit code: $?"
 # 期望：按文件系统语义处理（覆盖或拒绝，需定义行为）
@@ -259,9 +361,11 @@ diff <(cd /tmp/torrentfs-test-mnt/metadata/ && find . -name '*.torrent' | sed 's
 这是 torrentfs 的核心价值——用户只在实际读文件时才触发下载。
 
 ```bash
+cp "$SEED_DIR/selfseed.torrent" /tmp/torrentfs-test-mnt/metadata/os/linux/
+sleep 1
 # === 全量读取 ===
 # 用户操作：尝试读取一个文件
-cat /tmp/torrentfs-test-mnt/data/os/linux/ubuntu.torrent/ubuntu.iso > /tmp/test-output.iso
+cat /tmp/torrentfs-test-mnt/data/os/linux/selfseed.torrent/selfseed > /tmp/test-output.iso
 
 # 用户期望：
 # - 命令不立即报错（即使数据尚未下载）
@@ -270,42 +374,42 @@ cat /tmp/torrentfs-test-mnt/data/os/linux/ubuntu.torrent/ubuntu.iso > /tmp/test-
 # - 输出文件内容正确（与种子 hash 一致）
 
 # 验证输出完整性
-ORIG_SIZE=$(stat --format=%s /tmp/torrentfs-test-mnt/data/os/linux/ubuntu.torrent/ubuntu.iso)
+ORIG_SIZE=$(stat --format=%s /tmp/torrentfs-test-mnt/data/os/linux/selfseed.torrent/selfseed)
 OUTPUT_SIZE=$(stat --format=%s /tmp/test-output.iso)
 echo "Original: $ORIG_SIZE  Output: $OUTPUT_SIZE"
 # 期望：大小一致
 
 # === 部分读取（seek/skip） ===
 # 读取文件中间 1KB（从 1MB 偏移处开始）
-dd if=/tmp/torrentfs-test-mnt/data/os/linux/ubuntu.torrent/ubuntu.iso    of=/tmp/test-chunk.bin bs=1024 skip=1024 count=1 2>&1
+dd if=/tmp/torrentfs-test-mnt/data/os/linux/selfseed.torrent/selfseed    of=/tmp/test-chunk.bin bs=1024 skip=1024 count=1 2>&1
 # 期望：正确读取 1024 字节
 
 # 读取文件开头 4KB
-dd if=/tmp/torrentfs-test-mnt/data/os/linux/ubuntu.torrent/ubuntu.iso    of=/tmp/test-head.bin bs=4096 count=1 2>&1
+dd if=/tmp/torrentfs-test-mnt/data/os/linux/selfseed.torrent/selfseed    of=/tmp/test-head.bin bs=4096 count=1 2>&1
 # 期望：正确读取 4096 字节
 
 # 读取文件末尾 1KB
-FILE_SIZE=$(stat --format=%s /tmp/torrentfs-test-mnt/data/os/linux/ubuntu.torrent/ubuntu.iso)
+FILE_SIZE=$(stat --format=%s /tmp/torrentfs-test-mnt/data/os/linux/selfseed.torrent/selfseed)
 TAIL_OFFSET=$((FILE_SIZE / 1024 - 1))
-dd if=/tmp/torrentfs-test-mnt/data/os/linux/ubuntu.torrent/ubuntu.iso    of=/tmp/test-tail.bin bs=1024 skip=$TAIL_OFFSET count=1 2>&1
+dd if=/tmp/torrentfs-test-mnt/data/os/linux/selfseed.torrent/selfseed    of=/tmp/test-tail.bin bs=1024 skip=$TAIL_OFFSET count=1 2>&1
 # 期望：读取最后 1024 字节，不越界
 
 # === 多次读取（验证缓存加速） ===
-time cat /tmp/torrentfs-test-mnt/data/os/linux/ubuntu.torrent/ubuntu.iso > /dev/null
+time cat /tmp/torrentfs-test-mnt/data/os/linux/selfseed.torrent/selfseed > /dev/null
 echo "First read done"
 
-time cat /tmp/torrentfs-test-mnt/data/os/linux/ubuntu.torrent/ubuntu.iso > /dev/null
+time cat /tmp/torrentfs-test-mnt/data/os/linux/selfseed.torrent/selfseed > /dev/null
 echo "Second read (should be faster due to cache)"
 
 # === 读取超出文件大小 ===
 # 尝试从超出的偏移量读取 → 应返回 0 字节，不 panic
-dd if=/tmp/torrentfs-test-mnt/data/os/linux/ubuntu.torrent/ubuntu.iso    of=/tmp/test-eof.bin bs=1 skip=999999999 count=1 2>&1
+dd if=/tmp/torrentfs-test-mnt/data/os/linux/selfseed.torrent/selfseed    of=/tmp/test-eof.bin bs=1 skip=999999999 count=1 2>&1
 echo "EOF read exit code: $?"
 # 期望：返回 0（正常 EOF），不报错
 
 # === 查看文件大小（不应为 0） ===
-ls -la /tmp/torrentfs-test-mnt/data/os/linux/ubuntu.torrent/ubuntu.iso
-stat /tmp/torrentfs-test-mnt/data/os/linux/ubuntu.torrent/ubuntu.iso
+ls -la /tmp/torrentfs-test-mnt/data/os/linux/selfseed.torrent/selfseed
+stat /tmp/torrentfs-test-mnt/data/os/linux/selfseed.torrent/selfseed
 # 期望：size 显示完整大小，不是 0
 ```
 
@@ -339,8 +443,8 @@ find /tmp/torrentfs-test-mnt/data/ -type f -o -type d | head -50
 # stat 各个条目
 stat /tmp/torrentfs-test-mnt/data/
 stat /tmp/torrentfs-test-mnt/data/os/
-stat /tmp/torrentfs-test-mnt/data/os/linux/ubuntu.torrent/
-stat /tmp/torrentfs-test-mnt/data/os/linux/ubuntu.torrent/ubuntu.iso
+stat /tmp/torrentfs-test-mnt/data/os/linux/selfseed.torrent/
+stat /tmp/torrentfs-test-mnt/data/os/linux/selfseed.torrent/selfseed
 # 期望：所有路径 stat 正常返回，文件大小 > 0，权限正确
 
 # 检查 data/ 镜像 metadata/ 结构
@@ -372,7 +476,7 @@ echo "hello" > /tmp/torrentfs-test-mnt/data/foo.txt
 # 期望：Permission denied 或 Read-only file system
 
 # 错误2：删除 data/ 下的文件
-rm /tmp/torrentfs-test-mnt/data/os/linux/ubuntu.torrent/ubuntu.iso
+rm /tmp/torrentfs-test-mnt/data/os/linux/selfseed.torrent/selfseed
 # 期望：Read-only file system
 
 # 错误3：在 data/ 下创建目录
@@ -400,31 +504,140 @@ cp /tmp/bad.torrent /tmp/torrentfs-test-mnt/metadata/
 | invalid .torrent | 写入时 `EINVAL` | "种子文件无效" |
 | 写入无效后 data/ 无对应 | 不出 ghosts | 干净 |
 
-### 场景 6：并发操作
+### 场景 6：并发读取测试
 
-用户可能同时打开多个终端窗口。
+用户可能同时打开多个终端窗口，或在多个程序里同时读取相同/不同文件。并发场景重点验证：**不崩溃、不丢数据、读出的内容与串行读取完全一致**。
 
 ```bash
-# 终端1：读取一个大文件
-cat /tmp/torrentfs-test-mnt/data/ubuntu.torrent/large.iso > /dev/null &
+# 准备：挂载 + 写入两个种子（一个大文件种子，一个小文件种子）
+./target/release/torrentfs /tmp/torrentfs-test-mnt \
+  --db /tmp/torrentfs-test-state/metadata.db \
+  --cache /tmp/torrentfs-test-state/cache &
+sleep 1
+mkdir -p /tmp/torrentfs-test-mnt/metadata/big /tmp/torrentfs-test-mnt/metadata/small
+cp "$SEED_DIR/selfseed.torrent" /tmp/torrentfs-test-mnt/metadata/big/
+cp "$SEED_DIR/selfseed.torrent" /tmp/torrentfs-test-mnt/metadata/small/
+sleep 1
+BIG=/tmp/torrentfs-test-mnt/data/big/selfseed.torrent/selfseed
+SMALL=/tmp/torrentfs-test-mnt/data/small/selfseed.torrent/selfseed
+```
 
-# 终端2：同时浏览同一目录
-ls -la /tmp/torrentfs-test-mnt/data/ubuntu.torrent/
+#### 6.1 单文件多进程并发全量读
 
-# 终端3：同时在另一个种子目录浏览
-ls -la /tmp/torrentfs-test-mnt/data/debian.torrent/
+多个进程同时读**同一个文件**，每个进程的输出必须与串行读取一致：
 
-# 终端4：同时删除另一个种子
-rm /tmp/torrentfs-test-mnt/metadata/old.torrent
+```bash
+# 5 个进程同时 cat 同一文件，各自落盘
+for i in 1 2 3 4 5; do
+  cat "$BIG" > /tmp/conc-read-$i.iso &
+done
+wait
+echo "并发读退出码: $?"
+
+# 完整性：所有输出 md5 一致，且与文件系统 stat 大小一致
+for i in 1 2 3 4 5; do
+  md5sum /tmp/conc-read-$i.iso
+done
+stat --format=%s "$BIG"
+# 期望：5 个 md5 完全相同；输出大小 == stat 大小；进程全部退出
+```
+
+#### 6.2 多文件并发读
+
+不同进程同时读不同文件，互不干扰：
+
+```bash
+cat "$BIG" > /tmp/conc-big.iso &
+cat "$SMALL" > /tmp/conc-small.iso &
+cat "$BIG" > /tmp/conc-big-2.iso &
+wait
+md5sum /tmp/conc-big.iso /tmp/conc-big-2.iso
+# 期望：两个 big 输出 md5 一致；small 读取正常返回
+```
+
+#### 6.3 并发读 + 错位偏移读（模拟播放器 seek 行为）
+
+多个 dd 进程从**不同偏移**并发读同一文件，每个分片必须精确：
+
+```bash
+FILE_SIZE=$(stat --format=%s "$BIG")
+# 并发 8 个不同偏移读取（头部/中部/尾部交叉）
+for off in 0 1024 4096 $((FILE_SIZE/4)) $((FILE_SIZE/2)) $((FILE_SIZE*3/4)) $((FILE_SIZE-4096)) 999999; do
+  dd if="$BIG" of=/tmp/conc-off-$off.bin bs=1 skip=$off count=4096 2>/dev/null &
+done
+wait
+# 期望：每个 dd 正常退出（exit 0）；越界偏移（999999）返回 0 字节不报错
+# 校验：非越界偏移的 dd 输出大小 == 4096（头部偏移 0 时 bs=4096 count=1 同理）
+```
+
+#### 6.4 并发读 + metadata 写入（读写混合）
+
+读取进行的同时，向 metadata/ 写入/删除种子，两者互不阻塞、不崩溃：
+
+```bash
+# 后台持续读大文件
+while true; do cat "$BIG" > /dev/null || break; done &
+READER=$!
+
+# 同时做 metadata 操作
+cp "$SEED_DIR/fedora.torrent" /tmp/torrentfs-test-mnt/metadata/
+sleep 1
+rm /tmp/torrentfs-test-mnt/metadata/fedora.torrent
+sleep 1
+cp "$SEED_DIR/fedora.torrent" /tmp/torrentfs-test-mnt/metadata/
+
+# 读取进程应仍在正常运行
+kill -0 $READER 2>/dev/null && echo "reader alive" || echo "reader died"
+kill $READER 2>/dev/null
+wait $READER 2>/dev/null
+# 期望：metadata 操作 exit 0；reader 未崩溃；data/ 镜像与 metadata/ 一致
+```
+
+#### 6.5 高并发压力测试（20+ 并发读）
+
+```bash
+# 20 个并发读者混读大/小文件 + 目录遍历
+for i in $(seq 1 10); do
+  cat "$BIG" > /dev/null &
+  cat "$SMALL" > /dev/null &
+done
+for i in 1 2 3; do
+  find /tmp/torrentfs-test-mnt/data/ | wc -l &
+done
+wait
+echo "压力测试退出码: $?"
+# 期望：全部正常退出，无 hang、无 panic、无 segfault
+# dmesg 检查（可选）：dmesg | tail -20 无 torrentfs 相关崩溃记录
+```
+
+#### 6.6 并发读数据一致性（结果比对）
+
+并发读输出与串行读输出逐字节一致：
+
+```bash
+# 串行基准
+cat "$BIG" > /tmp/serial.iso
+# 并发 5 路
+for i in 1 2 3 4 5; do cat "$BIG" > /tmp/conc-$i.iso & done
+wait
+for i in 1 2 3 4 5; do
+  cmp -s /tmp/serial.iso /tmp/conc-$i.iso && echo "conc-$i: 一致" || echo "conc-$i: 不一致 ✗"
+done
+# 期望：5 路全部"一致"
 ```
 
 **检查要点**：
 
-| 检查项 | 期望 |
-|--------|------|
-| 并发 readdir + read | 不崩溃、不死锁 |
-| 并发 unlink + 正在读取 | 优雅处理（读取完成或报错，不 segfault） |
-| 并发多个种子写入 | 不冲突 |
+| 检查项 | 命令 | 期望 |
+|--------|------|------|
+| 单文件多进程并发读 | 5×`cat` 同文件 | 全部成功，md5 一致 |
+| 多文件并发读 | 同时 cat 不同文件 | 互不干扰，内容正确 |
+| 错位偏移并发读 | 多进程不同 offset `dd` | 分片精确，越界返回 0 字节 |
+| 读 + metadata 写混合 | 后台 cat + cp/rm 种子 | 不崩溃、不丢事件、镜像一致 |
+| 高并发 20+ 读 | 20 进程混读 + find | 无 hang / panic / segfault |
+| 并发 vs 串行一致性 | `cmp` 逐字节比对 | 完全一致 |
+| 并发读 + 缓存 | 第二次并发读 | 命中缓存，无重复下载 |
+| 共享同一文件句柄 | 同一进程内多 fd 读 | 各 fd 偏移独立，不互相影响 |
 
 ### 场景 7：重启恢复
 
@@ -464,8 +677,10 @@ CACHE_DIR="/tmp/torrentfs-test-state/cache"
 ls -la "$CACHE_DIR" 2>/dev/null || echo "cache dir not found"
 find /tmp/torrentfs-test-state/ -type f | head -20
 
+cp "$SEED_DIR/selfseed.torrent" /tmp/torrentfs-test-mnt/metadata/os/linux/
+sleep 1
 # 2. 首次读取文件（触发下载）
-time cat /tmp/torrentfs-test-mnt/data/os/linux/ubuntu.torrent/ubuntu.iso > /dev/null
+time cat /tmp/torrentfs-test-mnt/data/os/linux/selfseed.torrent/selfseed > /dev/null
 echo "First read time: (see above)"
 
 # 3. 检查缓存是否已创建
@@ -482,7 +697,7 @@ if [ -n "$CACHE_FILE" ]; then
 fi
 
 # 5. 再次读取（应命中缓存，更快）
-time cat /tmp/torrentfs-test-mnt/data/os/linux/ubuntu.torrent/ubuntu.iso > /dev/null
+time cat /tmp/torrentfs-test-mnt/data/os/linux/selfseed.torrent/selfseed > /dev/null
 echo "Second read time: (should be much faster)"
 # 期望：第二次明显快于第一次
 
@@ -497,11 +712,11 @@ find /tmp/torrentfs-test-state/ -type f | wc -l
 sleep 2
 
 # 再次读取（应命中持久化缓存，不需要重新下载）
-time cat /tmp/torrentfs-test-mnt/data/os/linux/ubuntu.torrent/ubuntu.iso > /dev/null
+time cat /tmp/torrentfs-test-mnt/data/os/linux/selfseed.torrent/selfseed > /dev/null
 echo "Post-remount read time: (should hit cache, not re-download)"
 
 # 7. 删除种子后缓存清理
-rm /tmp/torrentfs-test-mnt/metadata/os/linux/ubuntu.torrent
+rm /tmp/torrentfs-test-mnt/metadata/os/linux/selfseed.torrent
 # 期望：对应缓存被清理（或延迟清理），不残留孤岛数据
 ```
 
@@ -526,11 +741,10 @@ rm /tmp/torrentfs-test-mnt/metadata/os/linux/ubuntu.torrent
 ```bash
 # 1. 批量写入种子
 echo "批量写入 20 个种子到 metadata/"
-SEED_DIR="/workspace/torrentfs"
 BATCH_DIR="/tmp/torrentfs-test-mnt/metadata/batch-import"
 
 mkdir -p "$BATCH_DIR"
-# 复制所有可用种子（含 Ubuntu ISO 等大种子）
+# 复制所有可用种子（含命名种子与 selfseed 种子）
 cp "$SEED_DIR"/*.torrent "$BATCH_DIR/" 2>/dev/null
 echo "写入数量: $(ls "$BATCH_DIR"/*.torrent 2>/dev/null | wc -l)"
 
@@ -687,60 +901,59 @@ rm -f /tmp/torrentfs-config.toml /tmp/torrentfs-bad.toml /tmp/torrentfs-partial.
 | 部分配置 | 仅覆盖指定项，其余使用默认值 |
 | --db / --cache 与配置文件共存 | 不冲突，各自独立作用域 |
 
-### 场景 11：.stats 虚拟文件 —— 系统状态查看
+### 场景 11：分层 .stats 虚拟文件 —— 全局 / 种子 / 目录统计
 
-挂载点根目录下的 `.stats` 只读虚拟文件实时展示系统运行状态。
+优化后 `.stats` 分为三层：根目录（全局）、种子叶子目录（单种子）、中间目录（聚合）。
 
 ```bash
-# 1. 挂载并写入种子
+# 1. 挂载并写入种子到三个不同 source_path
 ./target/release/torrentfs /tmp/torrentfs-test-mnt \
   --db /tmp/torrentfs-test-state/metadata.db \
   --cache /tmp/torrentfs-test-state/cache &
 
 sleep 1
 
-cp /workspace/torrentfs/ubuntu.iso.torrent /tmp/torrentfs-test-mnt/metadata/
+mkdir -p /tmp/torrentfs-test-mnt/metadata/os/linux
+mkdir -p /tmp/torrentfs-test-mnt/metadata/os/bsd
+mkdir -p /tmp/torrentfs-test-mnt/metadata/media
 
-# 2. 检查 .stats 是否可见
+cp "$SEED_DIR/ubuntu.iso.torrent" /tmp/torrentfs-test-mnt/metadata/os/linux/
+cp "$SEED_DIR/debian.torrent" /tmp/torrentfs-test-mnt/metadata/os/linux/
+cp "$SEED_DIR/freebsd.torrent" /tmp/torrentfs-test-mnt/metadata/os/bsd/
+cp "$SEED_DIR/movie.torrent" /tmp/torrentfs-test-mnt/metadata/media/
+sleep 1
+
+# ===== 测试 1：根目录 .stats（全局概览） =====
+echo "=== Root .stats ==="
+
+# 1a. 可见性
 ls -la /tmp/torrentfs-test-mnt/
 # 期望：-a 可见 .stats
 
 ls -la /tmp/torrentfs-test-mnt/.stats
 # 期望：显示为常规文件
 
-# 3. 读取 .stats 内容
-cat /tmp/torrentfs-test-mnt/.stats
-# 期望：输出包含所有数据段
-
-# 4. 检查各数据段存在
-cat /tmp/torrentfs-test-mnt/.stats | grep "概况"
-cat /tmp/torrentfs-test-mnt/.stats | grep "全局速率"
-cat /tmp/torrentfs-test-mnt/.stats | grep "连接"
-cat /tmp/torrentfs-test-mnt/.stats | grep "种子总览"
-cat /tmp/torrentfs-test-mnt/.stats | grep "种子详情"
-cat /tmp/torrentfs-test-mnt/.stats | grep "缓存详情"
-cat /tmp/torrentfs-test-mnt/.stats | grep "性能"
+# 1b. 全局内容段（纯英文，compact）
+cat /tmp/torrentfs-test-mnt/.stats | grep "Overview"
+cat /tmp/torrentfs-test-mnt/.stats | grep "Global Rates"
+cat /tmp/torrentfs-test-mnt/.stats | grep "Connections"
+cat /tmp/torrentfs-test-mnt/.stats | grep "Torrents"
+cat /tmp/torrentfs-test-mnt/.stats | grep "Cache"
 # 期望：每项都有对应内容
 
-# 5. 检查种子详情段包含种子名
-cat /tmp/torrentfs-test-mnt/.stats | grep "ubuntu"
-# 期望：种子详情段列出了 ubuntu 种子
+# 1c. 根目录 .stats 不包含逐种子详情
+cat /tmp/torrentfs-test-mnt/.stats | grep -c "torrent: "
+# 期望：0（无 "torrent: " 标题行）
 
-# 6. 检查缓存详情段按 info_hash 聚合
-cat /tmp/torrentfs-test-mnt/.stats | grep 'info_hash'
-# 期望：至少有一个 info_hash 条目
+# 1d. 全局统计包含种子计数
+cat /tmp/torrentfs-test-mnt/.stats | grep "Total:"
+# 期望：Total: 4 或类似（4 个种子）
 
-# 7. 检查关联种子在 info_hash 下列出
-cat /tmp/torrentfs-test-mnt/.stats | grep "source_path"
-# 期望：每个 info_hash 条目下列出关联种子和 source_path
+# 1e. stat 属性
+stat /tmp/torrentfs-test-mnt/.stats
+# 期望：权限 0444，regular file
 
-# 8. 实时性验证 —— 写入新种子后数据更新
-cp /workspace/torrentfs/debian.torrent /tmp/torrentfs-test-mnt/metadata/
-sleep 1
-cat /tmp/torrentfs-test-mnt/.stats | grep "种子实例"
-# 期望：种子数从 1 变为 2（或更多）
-
-# 9. .stats 只读性
+# 1f. 只读保护
 echo "test" > /tmp/torrentfs-test-mnt/.stats 2>&1
 echo "write exit: $?"
 # 期望：Permission denied
@@ -749,9 +962,116 @@ rm /tmp/torrentfs-test-mnt/.stats 2>&1
 echo "rm exit: $?"
 # 期望：Operation not permitted
 
-# 10. stat .stats
-stat /tmp/torrentfs-test-mnt/.stats
-# 期望：权限 0444，类型为 regular file
+
+# ===== 测试 2：种子叶子目录 .stats（单种子统计） =====
+echo "=== Torrent Leaf .stats ==="
+
+# 2a. 种子目录下可见 .stats
+ls -la /tmp/torrentfs-test-mnt/data/os/linux/ubuntu.iso.torrent/
+# 期望：包含 .stats
+
+# 2b. 读取单种子统计
+cat /tmp/torrentfs-test-mnt/data/os/linux/ubuntu.iso.torrent/.stats
+# 期望：输出包含该种子的状态、速率、peers、缓存
+
+# 2c. 内容段检查
+cat /tmp/torrentfs-test-mnt/data/os/linux/ubuntu.iso.torrent/.stats | grep "torrent: "
+# 期望：顶部有 "torrent: ubuntu.iso"
+
+cat /tmp/torrentfs-test-mnt/data/os/linux/ubuntu.iso.torrent/.stats | grep "Status"
+cat /tmp/torrentfs-test-mnt/data/os/linux/ubuntu.iso.torrent/.stats | grep "Rates"
+cat /tmp/torrentfs-test-mnt/data/os/linux/ubuntu.iso.torrent/.stats | grep "Peers"
+cat /tmp/torrentfs-test-mnt/data/os/linux/ubuntu.iso.torrent/.stats | grep "Cache"
+cat /tmp/torrentfs-test-mnt/data/os/linux/ubuntu.iso.torrent/.stats | grep "info_hash"
+# 期望：每个段都存在
+
+# 2d. 不同种子内容不同
+cat /tmp/torrentfs-test-mnt/data/os/linux/debian.torrent/.stats | grep "torrent: "
+# 期望：显示 "torrent: debian.iso"，与 ubuntu 不同
+
+cat /tmp/torrentfs-test-mnt/data/media/movie.torrent/.stats | grep "torrent: "
+# 期望：显示 "torrent: movie..."
+
+# 2e. 只读保护
+echo "test" > /tmp/torrentfs-test-mnt/data/os/linux/ubuntu.iso.torrent/.stats 2>&1
+echo "write exit: $?"
+# 期望：Permission denied
+
+rm /tmp/torrentfs-test-mnt/data/os/linux/ubuntu.iso.torrent/.stats 2>&1
+echo "rm exit: $?"
+# 期望：Operation not permitted
+
+
+# ===== 测试 3：中间目录 .stats（聚合统计） =====
+echo "=== Directory .stats ==="
+
+# 3a. data/ 根目录有 .stats
+ls -la /tmp/torrentfs-test-mnt/data/
+# 期望：可见 .stats
+
+# 3b. 中间目录有 .stats
+ls -la /tmp/torrentfs-test-mnt/data/os/
+# 期望：可见 .stats
+
+ls -la /tmp/torrentfs-test-mnt/data/os/linux/
+# 期望：可见 .stats
+
+# 3c. 读取 data/ 聚合统计
+cat /tmp/torrentfs-test-mnt/data/.stats
+# 期望：汇总所有根级种子（4 个：ubuntu, debian, freebsd, movie）
+
+# 3d. 读取中间目录聚合统计
+cat /tmp/torrentfs-test-mnt/data/os/.stats
+# 期望：汇总 os/ 下所有种子（3 个：ubuntu, debian, freebsd）
+
+cat /tmp/torrentfs-test-mnt/data/os/linux/.stats
+# 期望：汇总 os/linux/ 下所有种子（2 个：ubuntu, debian）
+
+# 3e. 内容段检查
+cat /tmp/torrentfs-test-mnt/data/os/linux/.stats | grep "directory: "
+# 期望：顶部有 "directory: /data/os/linux"
+
+cat /tmp/torrentfs-test-mnt/data/os/linux/.stats | grep "Summary"
+cat /tmp/torrentfs-test-mnt/data/os/linux/.stats | grep "Torrents:"
+# 期望：显示 2 个 torrents
+
+cat /tmp/torrentfs-test-mnt/data/os/linux/.stats | grep "Torrents --"
+# 期望：种子列表段包含两个种子摘要行
+
+# 3f. 只读保护
+echo "test" > /tmp/torrentfs-test-mnt/data/os/.stats 2>&1
+echo "write exit: $?"
+# 期望：Permission denied
+
+rm /tmp/torrentfs-test-mnt/data/os/.stats 2>&1
+echo "rm exit: $?"
+# 期望：Operation not permitted
+
+
+# ===== 测试 4：实时性验证 =====
+echo "=== Real-time update ==="
+
+# 写入新种子后根目录 .stats 更新
+cp "$SEED_DIR/fedora.torrent" /tmp/torrentfs-test-mnt/metadata/
+sleep 1
+cat /tmp/torrentfs-test-mnt/.stats | grep "Total:"
+# 期望：Total: 5（从 4 变为 5）
+
+# 新种子所在目录的 .stats 更新
+cat /tmp/torrentfs-test-mnt/data/.stats | grep "Torrents:"
+# 期望：Torrents: 5
+
+
+# ===== 测试 5：没有 .stats 的目录 =====
+echo "=== No .stats in internal torrent sub-dirs ==="
+
+# Torrent 内部的子目录不应有 .stats
+ls -la /tmp/torrentfs-test-mnt/data/ubuntu.iso.torrent/ 2>&1 | grep "stat"
+# 期望：种子内部目录（TorrentDir）不包含 .stats
+
+# 目录内常规文件不显示 .stats
+ls -la /tmp/torrentfs-test-mnt/metadata/ 2>&1 | grep "stat"
+# 期望：metadata 目录不包含 .stats
 
 fusermount -u /tmp/torrentfs-test-mnt
 ```
@@ -760,17 +1080,672 @@ fusermount -u /tmp/torrentfs-test-mnt
 
 | 检查项 | 期望 |
 |--------|------|
-| .stats 可见 | `ls -la` 列出 `.stats` |
-| 内容包含所有数据段 | 概况 / 速率 / 连接 / 种子总览 / 种子详情 / 缓存详情 / 性能 |
-| 种子详情含种子名 | 列出所有已写入种子 |
-| 缓存按 info_hash 聚合 | `info_hash` 条目，非按种子 |
-| 关联种子展开列出 | 每个 info_hash 下列出 source_path 和种子名 |
-| 数据实时更新 | 新种子写入后再次 cat 种子数增加 |
-| 只读保护 | write/rm 被拒绝 |
+| 根目录 .stats 可见 | `ls -la /mount/` 列出 `.stats` |
+| 根目录 .stats 内容段 | Overview / Global Rates / Connections / Torrents / Cache |
+| 根目录不含逐种子详情 | 无 "torrent: " 标题行 |
+| 种子目录 .stats 可见 | `ls -la` 种子目录下列出 `.stats` |
+| 种子 .stats 内容 | 有 torrent: 标题、Status、Rates、Peers、Cache、info_hash 段 |
+| 不同种子 .stats 不同 | 内容随种子变化 |
+| data/ .stats 可见 | `ls -la /mount/data/` 列出 `.stats` |
+| 中间目录 .stats 可见 | 所有 SourcePathDir 层级列出 `.stats` |
+| 中间目录聚合正确 | /data/os/linux 聚合 2 个种子，/data/os 聚合 3 个 |
+| 目录 .stats 内容段 | Summary / Torrents / Rates / Peers / Cache |
+| 数据实时更新 | 新种子写入后 .stats 种子数增加 |
+| 三层只读保护 | write/rm 在三层均被拒绝 |
+| 种子内部无 .stats | TorrentDir 子目录不包含 .stats |
+| metadata/ 无 .stats | metadata/ 目录不包含 .stats |
 | stat 权限正确 | 0444，regular file |
 
 
 ---
+
+### 场景 12：Docker 容器内启动 → 宿主机目录访问测试
+
+验证 torrentfs 在 Docker 容器内启动后，宿主机能否通过共享挂载传播正常访问 FUSE 文件系统。核心测试路径：**宿主机在 `$HOST_DIR` 侧操作**，而非 `docker exec` 进容器执行。torrentfs 项目自带 `Dockerfile` 和 `entrypoint.sh`，支持 FUSE 设备直通和 `rshared` 挂载传播。
+
+```bash
+# 准备：构建 Docker 镜像
+cd <repo_root>
+docker build -t torrentfs:test .
+echo "镜像构建完成"
+docker images torrentfs:test
+```
+
+#### 12.1 宿主机目录准备与共享挂载传播
+
+容器需要宿主机的 FUSE 设备和共享挂载传播：
+
+```bash
+# 创建宿主机侧目录（用于容器与宿主机共享 torrentfs 挂载点）
+HOST_DIR=/tmp/torrentfs-docker-host
+mkdir -p "$HOST_DIR"
+# 标记为共享挂载
+mount --bind "$HOST_DIR" "$HOST_DIR"
+mount --make-shared "$HOST_DIR"
+echo "宿主机共享目录已设置: $HOST_DIR"
+
+# 准备种子目录
+mkdir -p "$HOST_DIR/metadata"
+cp "$SEED_DIR"/*.torrent "$HOST_DIR/metadata/" 2>/dev/null || true
+# 注意：内容读取需 tracker 可达。本场景容器用 --network host 直连宿主机；若用 bridge 网络，请改用 'Docker 变体' 中以 --announce-host <host IP> 生成的 selfseed.torrent。
+```
+
+#### 12.2 启动容器并挂载 torrentfs
+
+```bash
+# 启动容器，直通 /dev/fuse 并将共享目录挂载到容器内
+# --network host 让容器直连宿主机 tracker（16969）；bridge 网络下需用 --announce-host <host IP> 重新生成的 selfseed 种子
+docker run -d --rm \
+  --network host \
+  --device /dev/fuse \
+  --cap-add SYS_ADMIN \
+  --security-opt apparmor:unconfined \
+  --mount type=bind,source="$HOST_DIR",target=/mnt,bind-propagation=rshared \
+  --name torrentfs-test \
+  torrentfs:test /mnt
+
+# 等待挂载完成
+sleep 3
+echo "容器状态:"
+docker ps --filter name=torrentfs-test --format "{{.Status}}"
+
+# 验证容器内 torrentfs 已挂载
+docker exec torrentfs-test ls /mnt
+# 期望：列出 metadata/ data/ 目录
+
+# 验证宿主机也能看到 torrentfs 挂载
+ls "$HOST_DIR"
+# 期望：宿主机侧的 $HOST_DIR 也显示 metadata/ data/
+```
+
+#### 12.3 宿主机侧写入种子（通过共享挂载）
+
+torrentfs 容器通过 `rshared` 挂载传播将 FUSE 挂载点暴露到宿主机 `$HOST_DIR`。宿主机应当能像操作本地 FUSE 挂载一样直接读写该目录——**不需要** `docker exec`。
+
+```bash
+# 宿主机侧：将种子放入 metadata/（通过共享挂载点）
+HOST_DIR=/tmp/torrentfs-docker-host
+mkdir -p "$HOST_DIR/metadata/linux"
+cp "$SEED_DIR/ubuntu.iso.torrent" "$HOST_DIR/metadata/linux/"
+
+# 期望：cp 成功，exit 0
+
+# 宿主机侧：验证 data/ 镜像已通过 torrentfs 自动创建
+ls "$HOST_DIR/data/linux/"
+# 期望：显示 ubuntu.iso.torrent/ 目录（torrentfs 容器内自动镜像到 data/）
+
+# 宿主机侧：浏览 data/ 下的文件
+ls -la "$HOST_DIR/data/linux/ubuntu.iso.torrent/"
+# 期望：显示内部文件列表（文件名、大小、权限与种子元数据一致）
+
+# 宿主机侧：验证 stat 信息
+stat "$HOST_DIR/data/linux/ubuntu.iso.torrent/"
+# 期望：权限 0555
+
+# 宿主机侧：创建子目录结构并写入多个种子
+mkdir -p "$HOST_DIR/metadata/my-seeds"
+cp "$SEED_DIR/debian.torrent" "$HOST_DIR/metadata/my-seeds/"
+cp "$SEED_DIR/fedora.torrent" "$HOST_DIR/metadata/my-seeds/"
+
+# 验证 data/ 镜像同步
+ls "$HOST_DIR/data/my-seeds/"
+# 期望：debian.torrent/  fedora.torrent/ 两个目录
+
+# 宿主机侧：浏览种子内部文件
+ls -la "$HOST_DIR/data/my-seeds/debian.torrent/"
+# 期望：显示种子内包含的文件
+```
+
+#### 12.4 宿主机侧读取文件（触发懒加载）
+
+宿主机通过 `$HOST_DIR/data/` 直接读取 torrentfs 文件，触发容器内 libtorrent 的懒加载下载。
+
+```bash
+HOST_DIR=/tmp/torrentfs-docker-host
+
+cp "$SEED_DIR/selfseed.torrent" "$HOST_DIR/metadata/my-seeds/" && sleep 1
+# 宿主机侧：全量读取文件（触发懒加载下载）
+cat "$HOST_DIR/data/my-seeds/selfseed.torrent/selfseed" > /tmp/host-read.iso &
+READ_PID=$!
+sleep 5
+# 检查读取是否仍在进行
+kill -0 $READ_PID 2>/dev/null && echo "host reading in progress" || echo "host read completed or failed"
+wait $READ_PID 2>/dev/null
+echo "宿主机侧读取退出码: $?"
+# 期望：正常读取（可能较慢，取决于下载速度）
+
+# 宿主机侧：部分读取（seek 到中间偏移）
+dd if="$HOST_DIR/data/my-seeds/selfseed.torrent/selfseed" \
+  bs=4096 count=10 skip=0 2>/dev/null | wc -c
+# 期望：输出 40960（40KB，10 个块）
+
+# 宿主机侧：读取头部 4KB
+dd if="$HOST_DIR/data/my-seeds/selfseed.torrent/selfseed" \
+  bs=4096 count=1 2>/dev/null | wc -c
+# 期望：4096
+
+# 宿主机侧：再次读取（应命中缓存，更快）
+time cat "$HOST_DIR/data/my-seeds/selfseed.torrent/selfseed" > /dev/null
+echo "宿主机第二次读取完成（应命中缓存）"
+# 期望：第二次明显快于第一次
+```
+
+#### 12.5 宿主机侧数据一致性验证
+
+宿主机通过 `$HOST_DIR` 直接读取 torrentfs 数据，验证 `data/` 镜像的完整性和正确性。
+
+```bash
+HOST_DIR=/tmp/torrentfs-docker-host
+
+# 宿主机侧：data/ 目录结构应与 metadata/ 种子文件一一对应
+echo "metadata/ 种子文件:"
+find "$HOST_DIR/metadata/" -name '*.torrent' | sort
+echo "data/ 镜像目录:"
+find "$HOST_DIR/data/" -type d -not -name '.' 2>/dev/null | sort | head -20
+# 期望：data/ 下每个种子目录对应该种子在 metadata/ 中的 source_path
+
+# 宿主机侧：stat 种子目录下的文件（验证大小和权限）
+ls -la "$HOST_DIR/data/my-seeds/selfseed.torrent/"
+# 期望：显示文件列表，大小 > 0，权限 0444
+
+STAT_SIZE=$(stat --format=%s "$HOST_DIR/data/my-seeds/selfseed.torrent/selfseed" 2>/dev/null)
+echo "文件大小: $STAT_SIZE"
+# 期望：大小 > 0（种子元数据中的文件大小）
+
+# 宿主机侧：部分读取（头部 16KB）
+dd if="$HOST_DIR/data/my-seeds/selfseed.torrent/selfseed" \
+  bs=4096 count=4 skip=0 2>/dev/null | wc -c
+# 期望：16384（16KB）
+
+# 宿主机侧：读取 linux/ 目录下的 ubuntu 种子
+ls -la "$HOST_DIR/data/linux/ubuntu.iso.torrent/" 2>/dev/null
+# 期望：种子目录可见，文件正常
+
+# 宿主机侧：多次读取同一区域，内容应一致
+dd if="$HOST_DIR/data/my-seeds/selfseed.torrent/selfseed" \
+  bs=4096 count=4 skip=0 2>/dev/null | md5sum
+dd if="$HOST_DIR/data/my-seeds/selfseed.torrent/selfseed" \
+  bs=4096 count=4 skip=0 2>/dev/null | md5sum
+# 期望：两次 md5 一致
+```
+
+#### 12.6 宿主机侧错误操作拒绝
+
+宿主机对 `data/` 的写操作应被 torrentfs 拒绝（只读语义通过共享挂载传播到宿主机）。
+
+```bash
+HOST_DIR=/tmp/torrentfs-docker-host
+
+# 宿主机侧：向 data/ 写入应被拒绝
+echo "test" > "$HOST_DIR/data/test.txt" 2>&1
+echo "exit: $?"
+# 期望：Permission denied 或 Read-only file system
+
+# 宿主机侧：删除 data/ 文件应被拒绝
+rm "$HOST_DIR/data/my-seeds/selfseed.torrent/selfseed" 2>&1
+echo "exit: $?"
+# 期望：Operation not permitted
+
+# 宿主机侧：在 data/ 下创建目录应被拒绝
+mkdir "$HOST_DIR/data/newdir" 2>&1
+echo "exit: $?"
+# 期望：Read-only file system
+
+# 宿主机侧（可选交叉验证）：容器内错误操作同样被拒绝
+docker exec torrentfs-test touch /mnt/data/my-seeds/test 2>&1
+echo "container touch exit: $?"
+# 期望：Permission denied 或 Read-only file system
+```
+
+#### 12.7 容器重启后数据持久性（宿主机侧验证）
+
+宿主机通过 `$HOST_DIR/metadata/` 写入种子，重启容器后宿主机仍应通过 `$HOST_DIR/data/` 看到相同的目录结构。
+
+```bash
+HOST_DIR=/tmp/torrentfs-docker-host
+
+# 宿主机侧：写入种子到 metadata/ 下的 persistent/ 目录
+mkdir -p "$HOST_DIR/metadata/persistent"
+cp "$SEED_DIR/selfseed.torrent" "$HOST_DIR/metadata/persistent/"
+cp "$SEED_DIR/ubuntu.iso.torrent" "$HOST_DIR/metadata/persistent/"
+
+# 宿主机侧：验证 data/ 镜像同步
+ls "$HOST_DIR/data/persistent/"
+# 期望：selfseed.torrent/ 和 ubuntu.iso.torrent/ 存在
+
+# 重启容器
+docker restart torrentfs-test
+sleep 3
+
+# 宿主机侧：验证重启后数据仍在
+ls "$HOST_DIR/data/persistent/"
+# 期望：persistent/ 目录及种子仍在
+
+# 宿主机侧：浏览种子目录文件
+ls -la "$HOST_DIR/data/persistent/ubuntu.iso.torrent/"
+# 期望：文件可见，stat 大小不为 0
+
+# 宿主机侧：读取确认功能正常
+dd if="$HOST_DIR/data/persistent/selfseed.torrent/selfseed" \
+  bs=4096 count=1 2>/dev/null | wc -c
+# 期望：4096（读取正常）
+
+# 宿主机侧：再写入一个新种子（结构），验证重启后仍工作
+cp "$SEED_DIR/debian.torrent" "$HOST_DIR/metadata/persistent/"
+docker restart torrentfs-test
+sleep 3
+ls "$HOST_DIR/data/persistent/"
+# 期望：selfseed.torrent/、ubuntu.iso.torrent/ 和 debian.torrent/ 都存在
+```
+
+#### 12.8 多容器访问同一挂载（挂载冲突检测）
+
+TSI-2901 起，entrypoint 对同一宿主目录的并发挂载做冲突检测：两个容器通过
+`rshared` 绑定同一宿主目录会叠加 FUSE 挂载并互相切断（ENOTCONN）。entrypoint
+在挂载前对 mountpoint 目录取排他 `flock`（fd 9 持有整个容器生命周期），并探测
+是否已有 FUSE 挂载，二者任一命中即拒绝启动（exit 101），且**不会切断第一个
+容器的挂载**。
+
+**情形 A：顺序启动 —— 容器2 拒绝 exit 101，容器1 不受影响**
+
+```bash
+HOST_DIR=/tmp/torrentfs-docker-host
+
+# 前置：容器1（torrentfs-test）已由 12.2 正常挂载
+docker ps --filter name=torrentfs-test --format "{{.Status}}"
+# 期望：Up（容器1 运行中）
+
+# 启动第二个容器，绑定同一共享目录 → 应拒绝启动 exit 101
+docker run --rm \
+  --network host \
+  --device /dev/fuse \
+  --cap-add SYS_ADMIN \
+  --security-opt apparmor:unconfined \
+  --mount type=bind,source="$HOST_DIR",target=/mnt2,bind-propagation=rshared \
+  --name torrentfs-test-2 \
+  torrentfs:test /mnt2 2>&1
+echo "container2 exit: $?"
+# 期望：exit 101；stderr 含 "[entrypoint] ERROR"
+
+# 验证容器1 不受影响：挂载未被切断，仍可正常访问
+docker exec torrentfs-test ls /mnt 2>&1
+echo "container1 ls exit: $?"
+# 期望：exit 0，列出 metadata/ data/（无 "Transport endpoint is not connected"）
+```
+
+**情形 B：同时启动 —— 恰好一个成功，另一个 exit 101**
+
+```bash
+# 用全新宿主目录做同时启动竞争（避免与容器1 已持有的 flock 冲突）
+HOST_DIR2=/tmp/torrentfs-docker-host2
+mkdir -p "$HOST_DIR2"
+mount --bind "$HOST_DIR2" "$HOST_DIR2"
+mount --make-shared "$HOST_DIR2"
+mkdir -p "$HOST_DIR2/metadata"
+
+# 同时启动两个容器，竞争同一共享目录
+docker run -d --rm \
+  --network host \
+  --device /dev/fuse \
+  --cap-add SYS_ADMIN \
+  --security-opt apparmor:unconfined \
+  --mount type=bind,source="$HOST_DIR2",target=/mnt-a,bind-propagation=rshared \
+  --name torrentfs-test-a \
+  torrentfs:test /mnt-a &
+docker run -d --rm \
+  --network host \
+  --device /dev/fuse \
+  --cap-add SYS_ADMIN \
+  --security-opt apparmor:unconfined \
+  --mount type=bind,source="$HOST_DIR2",target=/mnt-b,bind-propagation=rshared \
+  --name torrentfs-test-b \
+  torrentfs:test /mnt-b &
+wait
+sleep 3
+
+# 恰好一个容器存活（挂载成功），另一个 exit 101
+docker ps -a --filter name=torrentfs-test-a --format '{{.Names}}  {{.Status}}'
+docker ps -a --filter name=torrentfs-test-b --format '{{.Names}}  {{.Status}}'
+# 期望：一个 "Up ..."，另一个 "Exited (101) ..."
+
+# 清理
+docker rm -f torrentfs-test-a torrentfs-test-b 2>/dev/null || true
+sudo fusermount3 -u "$HOST_DIR2" 2>/dev/null || sudo fusermount -u "$HOST_DIR2" 2>/dev/null || sudo umount "$HOST_DIR2" 2>/dev/null || true
+rm -rf "$HOST_DIR2"
+```
+
+#### 12.9 无需 --privileged 运行
+
+```bash
+# 验证使用 --device /dev/fuse + --cap-add SYS_ADMIN 即可，不需要 --privileged
+docker run -d --rm \
+  --device /dev/fuse \
+  --cap-add SYS_ADMIN \
+  --security-opt apparmor:unconfined \
+  --mount type=bind,source="$HOST_DIR",target=/mnt3,bind-propagation=rshared \
+  --name torrentfs-test-no-priv \
+  torrentfs:test /mnt3
+
+sleep 3
+docker exec torrentfs-test-no-priv ls /mnt3 2>&1
+echo "无 --privileged 退出码: $?"
+# 期望：正常挂载，ls 可列出目录
+
+# 不使用 --device /dev/fuse — 应失败
+docker run -d --rm \
+  --cap-add SYS_ADMIN \
+  --security-opt apparmor:unconfined \
+  --mount type=bind,source="$HOST_DIR",target=/mnt4,bind-propagation=rshared \
+  --name torrentfs-test-no-fuse \
+  torrentfs:test /mnt4 2>&1
+# 期望：容器启动失败或 entrypoint 报错（/dev/fuse 不存在）
+
+# 清理
+docker stop torrentfs-test-no-priv 2>/dev/null || true
+docker rm -f torrentfs-test-no-fuse 2>/dev/null || true
+```
+
+#### 12.10 清理
+
+> **重启容器前，先从宿主机卸载残留挂载点。** `docker stop` 后 torrentfs 退出时
+> `bg.join()` 无限阻塞（代码侧缺陷，已独立提 TSI-2874），进程不会优雅退出，最终被
+> 容器运行时 SIGKILL，宿主机挂载点残留 stale（读时报
+> `Transport endpoint is not connected`）。**延长宽限期无法解决该问题**——无论宽限
+> 多长都会被 SIGKILL。`docker stop` 后仍建议 `fusermount3 -u` 兜底；否则直接
+> `docker start` 会报 `mkdir <mnt>: file exists`。
+
+```bash
+# 停止容器（残留 stale 挂载属已知缺陷 TSI-2874，宽限期无法规避）
+docker stop torrentfs-test
+
+# 卸载宿主机共享挂载：需 root/CAP_SYS_ADMIN，建议 sudo；fusermount 报
+# `entry not found in /etc/mtab` 时 fallback `sudo umount`。
+sudo fusermount3 -u "$HOST_DIR" 2>/dev/null || sudo fusermount -u "$HOST_DIR" 2>/dev/null || sudo umount "$HOST_DIR" 2>/dev/null || true
+rm -rf "$HOST_DIR"
+
+# 删除镜像（可选）
+docker rmi torrentfs:test 2>/dev/null || true
+echo "Docker 测试环境清理完成"
+```
+
+**检查要点**：
+
+| 检查项 | 命令 | 期望 |
+|--------|------|------|
+| 宿主机共享目录设置 | `mount --make-shared` | 挂载传播标记成功 |
+| 容器内挂载（验证容器正常启动） | `docker exec ls /mnt` | 列出 metadata/ data/ |
+| 宿主机可见性 | `ls "$HOST_DIR"` | 宿主机也看到 metadata/ data/ |
+| 宿主机侧写入种子 | `cp .torrent $HOST_DIR/metadata/` | 成功，exit 0 |
+| 宿主机侧 data/ 镜像同步 | `ls $HOST_DIR/data/` | 写入后宿主机侧立即看到镜像 |
+| 宿主机侧读取文件 | `cat $HOST_DIR/data/...` | 触发下载，正确返回数据 |
+| 宿主机侧读取一致性 | `dd` + `md5sum` 比对 | 多次读取 md5 一致 |
+| 宿主机侧错误操作拒绝 | `touch $HOST_DIR/data/` | Permission denied |
+| 宿主机侧重启后数据持久性 | `docker restart` 后 `ls $HOST_DIR/data/` | 种子目录和文件仍存在 |
+| 多容器挂载冲突（顺序） | 容器2 绑定同一宿主目录启动 | exit 101，容器1 挂载不受影响 |
+| 多容器挂载冲突（同时） | 两容器同时启动竞争同一目录 | 恰好一个存活，另一个 exit 101 |
+| 无需 --privileged | `--device /dev/fuse` 即可 | 正常工作 |
+| 缺少 /dev/fuse | 不加 `--device` | 启动失败或报错 |
+
+---
+
+## 选择性下载与下载进度场景
+
+用户只读了文件的一小段，系统就只下载那一小段附近的 piece，而不是整个文件。下面这些场景验证：`.stats` 里的 `-- Pieces --` 一行如何随用户的读取行为变化。
+
+**前置条件**：构建并挂载（见「前提条件」），准备一个大文件种子（单文件，如 ubuntu.iso.torrent）和一个多文件种子（含 3+ 文件与子目录）。`.stats` 的 `-- Pieces --` 行用符号表示每个 piece 的状态，实现实际输出以下四种形式：
+
+- `[x]` 已下载到缓存且未被访问过（hit_count = 0）
+- `[X n]` 已下载到缓存且被访问过 n 次（X + 空格 + 数字 n）
+- `[N]` 优先级为 N（向前方向递减，向后窗口内恒 1）
+- `[]` 未下载且不在计划内
+
+---
+
+### 场景 13：复制种子后先看一眼统计（零下载）
+
+用户把种子放进去，还没读任何文件，就想知道这个种子连上了多少做种者。
+
+```bash
+cp "$SEED_DIR/selfseed.torrent" /tmp/torrentfs-test-mnt/metadata/
+sleep 5   # 等 tracker 连接（selfseed swarm 为 loopback-only，无 DHT）
+
+cat /tmp/torrentfs-test-mnt/data/selfseed.torrent/.stats | grep -A 2 "Peers"
+# 期望：Peers > 0 或 Seeds > 0，不应看到 "0 peers / 0 seeds" 的健康警告
+```
+
+**检查要点**：
+
+| 检查项 | 期望 |
+|--------|------|
+| 不读文件也能看到连接信息 | Peers 或 Seeds > 0 |
+| 无可用做种者 | 出现健康警告，但 .stats 仍可正常读取 |
+
+### 场景 14：只读文件一小段，只下载附近的 piece
+
+用户用 dd 只读文件偏移 2MB 处的 1MB（selfseed 4 MiB，16 个 256 KiB piece），然后看 .stats 的 Pieces 行。
+
+> **限制**：访问窗口默认 4096 MiB，selfseed 仅 4 MiB（16 piece），整个文件都在窗口内——「窗口外 `[]`」断言在本场景不可观测，需 >4 GiB 种子才适用。本场景只验证：读取偏移附近的 piece 被提升/下载，窗口内未读 piece 为 `[1]`。
+
+```bash
+cp "$SEED_DIR/selfseed.torrent" /tmp/torrentfs-test-mnt/metadata/
+sleep 5
+
+# 只读偏移 2MB 处的 1MB（落在 piece 8）
+dd if=/tmp/torrentfs-test-mnt/data/selfseed.torrent/selfseed \
+   bs=1M count=1 skip=2 of=/dev/null
+sleep 5
+
+cat /tmp/torrentfs-test-mnt/data/selfseed.torrent/.stats | grep "Pieces"
+# 期望：-- Pieces (N pieces, X each) -- 一行；覆盖读取偏移的那个 piece 为 [X n]（已缓存，n ≥ 1）或 [7]（正在下载）
+```
+
+**检查要点**：
+
+| 检查项 | 期望 |
+|--------|------|
+| 只读一小段 | 只有读取偏移附近的 piece 被下载/提升 |
+| 未读区域 | 窗口外 piece 保持 `[]`（不下载）；窗口内未读 piece 为 `[1]`（wanted，最低优先级） |
+| 优先级从高到低 | 当前 piece `[7]`，向后 `[6]` `[5]` `[4]` `[3]`，窗口内其余 `[1]`，窗口外 `[]`，当前之前（窗口内）`[1]` |
+
+### 场景 15：多文件种子只读其中一个文件
+
+用户在多文件种子里只读文件 A，希望只有文件 A 对应的 piece 被下载，文件 B 不受影响。
+
+> **限制**：仓库 `run_self_seed_env.sh` 只做单文件种子，无多文件做种者。`movie.torrent` 用于验证目录结构与 `.stats` 中多文件 piece 布局；「读文件 A 下载其 piece」的优先级断言需自备一个做种中的多文件种子，否则 `cat` 约 40s 后返回 ENODATA（No seeder connected）——此时请仅验证目录结构（`ls -R data/movie.torrent/`）与 Pieces 行格式。
+
+```bash
+cp "$SEED_DIR/movie.torrent" /tmp/torrentfs-test-mnt/metadata/   # 多文件种子
+sleep 5
+
+# 只读文件 A
+cat /tmp/torrentfs-test-mnt/data/movie.torrent/movie/file_A > /dev/null
+sleep 5
+
+cat /tmp/torrentfs-test-mnt/data/movie.torrent/.stats | grep "Pieces"
+# 期望：文件 A 的 piece 优先级依次递减（7→6→5→4→3→1，窗口外为 []），文件 B 的 piece 保持 []（不在被访问文件的 piece 范围内）
+```
+
+**检查要点**：
+
+| 检查项 | 期望 |
+|--------|------|
+| 只读文件 A | 文件 A 的 piece 优先级依次递减 |
+| 文件 B 不受影响 | 文件 B 的 piece 保持 `[]`（不在被访问文件的 piece 范围内） |
+
+### 场景 16：读完整文件后，下载完的 piece 归入缓存
+
+用户读完整个文件（selfseed 4 MiB），下载完成后再看 .stats，已下载的 piece 应标记为缓存、不再占用下载优先级。
+
+```bash
+cp "$SEED_DIR/selfseed.torrent" /tmp/torrentfs-test-mnt/metadata/
+sleep 5
+
+# 读完整文件（触发下载）
+cat /tmp/torrentfs-test-mnt/data/selfseed.torrent/selfseed > /dev/null
+sleep 10   # 等下载完成
+
+cat /tmp/torrentfs-test-mnt/data/selfseed.torrent/.stats | grep "Pieces"
+# 期望：下载完成的 piece 显示 [X n]（已缓存且被访问过，n ≥ 1），未下载的 piece 显示 []
+```
+
+**检查要点**：
+
+| 检查项 | 期望 |
+|--------|------|
+| 下载完成 | piece 变为 `[X n]`（已缓存且被访问过，n ≥ 1），优先级归零 |
+| 未下载 piece | 保持 `[]` |
+
+### 场景 17：Pieces 行格式正确
+
+用户想知道 .stats 里 `-- Pieces --` 一行的格式是否稳定、可读。
+
+```bash
+cat /tmp/torrentfs-test-mnt/data/selfseed.torrent/.stats | grep -A 1 "Pieces"
+# 期望：-- Pieces (N pieces, X each) -- 之后紧跟一行连续的 piece 标记
+# 标记只出现 [] / [N] / [x] / [X N] 四种；piece 数量与种子信息一致
+```
+
+**检查要点**：
+
+| 检查项 | 期望 |
+|--------|------|
+| 标记格式 | 只有 `[]` / `[N]` / `[x]` / `[X N]` |
+| 数量一致 | piece 数量与种子元数据一致 |
+
+### 场景 18：从文件中间开始读，靠前的内容仍保留低优先级
+
+用户从文件中间读起，期望当前位置之前的内容不会被完全丢弃（保留低优先级，便于回放）。
+
+> **限制**：selfseed 16 piece 全在默认窗口内，「窗口外 `[]`」不可观测；本场景只验证中间读取的当前 piece 提升与向后递减（6→5→4→3→1）、向前 piece 为 `[1]` 而非 `[]`。
+
+```bash
+cp "$SEED_DIR/selfseed.torrent" /tmp/torrentfs-test-mnt/metadata/
+sleep 5
+
+FILE=/tmp/torrentfs-test-mnt/data/selfseed.torrent/selfseed
+SIZE=$(stat --format=%s "$FILE")
+# 从文件中间读取 1MB
+dd if="$FILE" bs=1M count=1 skip=$((SIZE/2/1048576)) of=/dev/null
+sleep 5
+
+cat /tmp/torrentfs-test-mnt/data/selfseed.torrent/.stats | grep "Pieces"
+# 期望：当前偏移的 piece = [7]，向后（文件末尾方向）6→5→4→3→1（窗口外 []），向前（文件开头方向，窗口内）[1]（非 []）
+```
+
+**检查要点**：
+
+| 检查项 | 期望 |
+|--------|------|
+| 中间读取 | 当前 piece `[7]`，向后递减 6→5→4→3→1（窗口外 `[]`） |
+| 向前内容 | 之前的内容 `[1]`，不被直接丢弃 |
+
+### 场景 19：同时读两个文件，互不干扰
+
+用户同时读多文件种子的两个文件，希望两个文件的下载进度各自独立。
+
+> **限制**：同上——`movie.torrent` 无做种者，两个 `cat` 约 40s 后返回 ENODATA（No seeder connected）。优先级互不干扰的断言需自备多文件 seeder；否则仅验证结构。
+
+```bash
+cp "$SEED_DIR/movie.torrent" /tmp/torrentfs-test-mnt/metadata/
+sleep 5
+
+cat /tmp/torrentfs-test-mnt/data/movie.torrent/movie/file_A > /dev/null &
+cat /tmp/torrentfs-test-mnt/data/movie.torrent/movie/file_B > /dev/null &
+wait
+sleep 5
+
+cat /tmp/torrentfs-test-mnt/data/movie.torrent/.stats | grep "Pieces"
+# 期望：文件 A 和文件 B 对应的 piece 各自显示正确的优先级，互不干扰
+```
+
+**检查要点**：
+
+| 检查项 | 期望 |
+|--------|------|
+| 并发读两文件 | 各自 piece 优先级正确 |
+| 互不干扰 | 不互相覆盖或串扰 |
+
+### 场景 20：缓存被淘汰后，重新读还能再下载
+
+用户读过某段内容（已缓存），缓存被新内容挤掉后，重新读同一段应能再次下载。
+
+```bash
+# 1. 先读一小段，让它进入缓存
+dd if=/tmp/torrentfs-test-mnt/data/selfseed.torrent/selfseed \
+   bs=1M count=1 skip=2 of=/dev/null
+sleep 5
+
+# 2. 读文件其它内容（selfseed 共 16 个 piece），把缓存挤到上限，使之前那段被淘汰
+cat /tmp/torrentfs-test-mnt/data/selfseed.torrent/selfseed > /dev/null
+sleep 10
+
+# 3. 重新读之前那一段
+dd if=/tmp/torrentfs-test-mnt/data/selfseed.torrent/selfseed \
+   bs=1M count=1 skip=2 of=/dev/null
+sleep 5
+
+cat /tmp/torrentfs-test-mnt/data/selfseed.torrent/.stats | grep "Pieces"
+# 期望：被淘汰的那段重新显示 [7] 或 [X n]（被重新提升/下载，重读后 n ≥ 1）
+```
+
+**检查要点**：
+
+| 检查项 | 期望 |
+|--------|------|
+| 淘汰后重读 | 该 piece 重新被提升 `[7]` 或重新下载并缓存 `[X n]`（n ≥ 1） |
+
+### 场景 21：读取时预取（默认访问窗口约 4 GiB）
+
+用户只读了一小段（selfseed 4 MiB，16 piece），系统会顺带把紧跟其后的一小段也标记为"接下来要下载"，但范围有限，不会预取整个文件。
+
+> **限制**：selfseed 整个文件都在 4096 MiB 访问窗口内，「窗口外 `[]`」与「预取范围有限（窗口边界）」不可观测；本场景只验证读取位置之后的 piece 有 `[6][5][4][3]` 预取优先级。
+
+```bash
+cp "$SEED_DIR/selfseed.torrent" /tmp/torrentfs-test-mnt/metadata/
+sleep 5
+
+# 只读偏移 2MB 处的 1MB
+dd if=/tmp/torrentfs-test-mnt/data/selfseed.torrent/selfseed \
+   bs=1M count=1 skip=2 of=/dev/null
+sleep 5
+
+cat /tmp/torrentfs-test-mnt/data/selfseed.torrent/.stats | grep "Pieces"
+# 期望：读取位置之后的若干 piece 被预取（[6] [5] [4] [3]），窗口内其余为 [1]，窗口外为 []
+```
+
+**检查要点**：
+
+| 检查项 | 期望 |
+|--------|------|
+| 读取后有预取 | 读取位置之后的 piece 有优先级（`[6]` `[5]` `[4]` `[3]`），不是 `[]` |
+| 预取范围有限 | 紧跟其后 4 个 piece 高优先级，窗口内（约 4 GiB）其余 `[1]`，窗口外 `[]` |
+
+### 场景 22：读取时日志保持精简
+
+用户开启 debug 日志读文件，期望日志只有摘要，不刷屏。
+
+```bash
+RUST_LOG=debug ./target/release/torrentfs /tmp/torrentfs-test-mnt \
+  --db /tmp/torrentfs-test-state/metadata.db \
+  --cache /tmp/torrentfs-test-state/cache 2> /tmp/torrentfs-debug.log &
+sleep 2
+
+cp "$SEED_DIR/selfseed.torrent" /tmp/torrentfs-test-mnt/metadata/
+sleep 5
+dd if=/tmp/torrentfs-test-mnt/data/selfseed.torrent/selfseed \
+   bs=1M count=1 skip=2 of=/dev/null
+
+grep -i "piece" /tmp/torrentfs-debug.log
+# 期望：可见读取摘要日志（一行）；没有逐 piece 的轮询刷新日志；异常时有 warn 日志
+```
+
+**检查要点**：
+
+| 检查项 | 期望 |
+|--------|------|
+| 读取摘要日志 | 有，且简洁（一行） |
+| 无逐 piece 刷屏 | 没有 per-piece 轮询循环日志 |
+| 异常告警 | 异常时有 warn 日志 |
 
 ## 输出格式
 
@@ -789,8 +1764,9 @@ fusermount -u /tmp/torrentfs-test-mnt
 - [x] 场景3 删除重命名 — 正常
 - [x] 场景4 文件读取 — 数据正确
 - [x] 场景5 错误拒绝 — 反馈清晰
-- [x] 场景6 并发操作 — 无崩溃
+- [x] 场景6 并发读取测试 — 数据一致、无崩溃
 - [x] 场景7 重启恢复 — 状态保留
+- [x] 场景12 Docker 容器访问 — 宿主机一致性
 
 🛡 边界测试：通过 (N 项)
 
@@ -865,7 +1841,7 @@ Impact: <对用户的影响：困惑/阻塞/数据丢失>
 | **P0** | 挂载/卸载（场景1）、浏览 data/（场景2）、文件读取正确性（场景4） | 阻断发布 |
 | **P1** | 子目录组织（场景2）、删除重命名（场景3）、metadata/ 实时镜像 | 核心体验 |
 | **P2** | 错误拒绝（场景5）、并发操作（场景6）、重启恢复（场景7）、缓存（场景8） | 完整功能 |
-| **P3** | 批量操作（场景9）、边界压力测试（特殊字符/超大种子/极深路径） | 边缘场景 |
+| **P3** | 批量操作（场景9）、边界压力测试（特殊字符/超大种子/极深路径）、Docker 容器访问（场景12） | 边缘场景 |
 
 ### 门禁
 
@@ -886,4 +1862,3 @@ Branch: `$REMOTE_BRANCH`
 |---|------|------|:------:|------|
 | N | <场景名> | <命令> | <code> | <单行 ≤80 字> |
 ```
-
