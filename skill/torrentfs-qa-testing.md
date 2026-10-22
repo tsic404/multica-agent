@@ -34,19 +34,49 @@ mkdir -p /tmp/torrentfs-test-state
 
 ### 测试种子准备
 
-准备至少以下类型的 .torrent 文件：
-- 小文件种子（单文件 < 1MB，如文本/图片）
-- 大文件种子（单文件 > 100MB，如 Linux ISO）
-- 多文件种子（3+ 文件，含子目录结构）
-- 无效种子（手动创建非法文件，或空文件）
+验收测试的种子一律从共享测试数据服务下载，**不复用仓库内副本、不自行生成、也不从公开 tracker 下载**——各 QA 主机本地数据不同会让结论不可复现。
 
-如项目仓库中有现成种子文件，直接复用；否则从公开 tracker 下载或自行创建。
-
-**项目种子文件路径**：`/workspace/torrentfs/*.torrent`（含 10 个种子，包括 Ubuntu ISO）
-
-列出可用种子：
 ```bash
-ls /workspace/torrentfs/*.torrent
+TESTDATA_BASE="http://10.20.33.70:8080/testdata"
+mkdir -p /tmp/torrentfs-test-seeds
+
+# 单文件大种子：Ubuntu 25.10 desktop ISO（5.7 GB）
+curl -fsSL -o "/tmp/torrentfs-test-seeds/ubuntu-25.10-desktop-amd64.iso.torrent" \
+  "$TESTDATA_BASE/torrents/ubuntu-25.10-desktop-amd64.iso.torrent"
+# 单文件大种子：Debian netinst（amd64 792 MB / arm64 735 MB）
+curl -fsSL -o "/tmp/torrentfs-test-seeds/debian-13.5.0-amd64-netinst.iso.torrent" \
+  "$TESTDATA_BASE/torrents/debian-13.5.0-amd64-netinst.iso.torrent"
+curl -fsSL -o "/tmp/torrentfs-test-seeds/debian-13.5.0-arm64-netinst.iso.torrent" \
+  "$TESTDATA_BASE/torrents/debian-13.5.0-arm64-netinst.iso.torrent"
+# 单文件小种子：4 MiB
+curl -fsSL -o "/tmp/torrentfs-test-seeds/selfseed.torrent" \
+  "$TESTDATA_BASE/torrents/selfseed.torrent"
+# 多文件种子：26 文件 / 13 文件，含子目录结构
+curl -fsSL -o "/tmp/torrentfs-test-seeds/multi-a.torrent" \
+  "$TESTDATA_BASE/torrents/c9db8c4370e21d1e841c28bdc5896b248c589ffa.torrent"
+curl -fsSL -o "/tmp/torrentfs-test-seeds/multi-b.torrent" \
+  "$TESTDATA_BASE/torrents/d433c0f69a08f019fb5d0a1b7f7cde3e5e7773eb.torrent"
+
+ls -l /tmp/torrentfs-test-seeds
+```
+
+服务端种子清单：
+
+| 本地文件 | 服务端路径 | 形态 | 内容 |
+|---|---|---|---|
+| `ubuntu-25.10-desktop-amd64.iso.torrent` | `torrents/ubuntu-25.10-desktop-amd64.iso.torrent` | 单文件 5.7 GB | Ubuntu 25.10 desktop ISO |
+| `debian-13.5.0-amd64-netinst.iso.torrent` | `torrents/debian-13.5.0-amd64-netinst.iso.torrent` | 单文件 792 MB | Debian 13.5 amd64 netinst |
+| `debian-13.5.0-arm64-netinst.iso.torrent` | `torrents/debian-13.5.0-arm64-netinst.iso.torrent` | 单文件 735 MB | Debian 13.5 arm64 netinst |
+| `selfseed.torrent` | `torrents/selfseed.torrent` | 单文件 4 MiB | 小文件种子 |
+| `multi-a.torrent` | `torrents/c9db8c4370e21d1e841c28bdc5896b248c589ffa.torrent` | 多文件 26 个 | 剧集合集 |
+| `multi-b.torrent` | `torrents/d433c0f69a08f019fb5d0a1b7f7cde3e5e7773eb.torrent` | 多文件 13 个 | 剧集合集 |
+
+下载失败（服务端不可达 / `curl` 非 0）→ **QA_BLOCKED**，不得用本地残留或自建种子继续。
+
+无效种子由服务端种子派生，不凭空生成：
+
+```bash
+head -c 100 "/tmp/torrentfs-test-seeds/selfseed.torrent" > /tmp/bad.torrent
 ```
 
 ### 环境清理
@@ -87,18 +117,18 @@ mkdir -p /tmp/torrentfs-test-mnt /tmp/torrentfs-test-state
 
 ```bash
 # 用户操作：把种子放进 metadata
-cp ubuntu.iso.torrent /tmp/torrentfs-test-mnt/metadata/
+cp "/tmp/torrentfs-test-seeds/ubuntu-25.10-desktop-amd64.iso.torrent" /tmp/torrentfs-test-mnt/metadata/
 
 # 用户期望：data/ 下出现对应目录
 ls /tmp/torrentfs-test-mnt/data/
-# → ubuntu.iso.torrent/
+# → ubuntu-25.10-desktop-amd64.iso.torrent/
 
 # 用户期望：进入目录看到文件
-ls -la /tmp/torrentfs-test-mnt/data/ubuntu.iso.torrent/
+ls -la /tmp/torrentfs-test-mnt/data/ubuntu-25.10-desktop-amd64.iso.torrent/
 # → ubuntu-25.10-desktop-amd64.iso  （文件名、大小正确）
 
 # 用户期望：文件大小合理
-stat /tmp/torrentfs-test-mnt/data/ubuntu.iso.torrent/ubuntu-25.10-desktop-amd64.iso
+stat /tmp/torrentfs-test-mnt/data/ubuntu-25.10-desktop-amd64.iso.torrent/ubuntu-25.10-desktop-amd64.iso
 ```
 
 **检查要点**：
@@ -121,16 +151,16 @@ mkdir -p /tmp/torrentfs-test-mnt/metadata/os/linux
 mkdir -p /tmp/torrentfs-test-mnt/metadata/media/movies
 
 # 用户操作：分别放入种子
-cp ubuntu.torrent /tmp/torrentfs-test-mnt/metadata/os/linux/
-cp debian.torrent /tmp/torrentfs-test-mnt/metadata/os/linux/
-cp movie.torrent /tmp/torrentfs-test-mnt/metadata/media/movies/
+cp "/tmp/torrentfs-test-seeds/ubuntu-25.10-desktop-amd64.iso.torrent" /tmp/torrentfs-test-mnt/metadata/os/linux/
+cp "/tmp/torrentfs-test-seeds/debian-13.5.0-amd64-netinst.iso.torrent" /tmp/torrentfs-test-mnt/metadata/os/linux/
+cp "/tmp/torrentfs-test-seeds/multi-a.torrent" /tmp/torrentfs-test-mnt/metadata/media/movies/
 
 # 用户期望：data/ 下镜像相同结构
 ls /tmp/torrentfs-test-mnt/data/os/linux/
-# → ubuntu.torrent/  debian.torrent/
+# → ubuntu-25.10-desktop-amd64.iso.torrent/  debian-13.5.0-amd64-netinst.iso.torrent/
 
 ls /tmp/torrentfs-test-mnt/data/media/movies/
-# → movie.torrent/
+# → multi-a.torrent/
 ```
 
 **检查要点**：
@@ -145,19 +175,19 @@ ls /tmp/torrentfs-test-mnt/data/media/movies/
 
 ```bash
 # 用户操作：重命名种子
-mv /tmp/torrentfs-test-mnt/metadata/os/linux/ubuntu.torrent \
-   /tmp/torrentfs-test-mnt/metadata/os/linux/ubuntu-25.10.torrent
+mv /tmp/torrentfs-test-mnt/metadata/os/linux/ubuntu-25.10-desktop-amd64.iso.torrent \
+   /tmp/torrentfs-test-mnt/metadata/os/linux/ubuntu-25.10-desktop.torrent
 
 # 用户期望：data/ 下对应变化
 ls /tmp/torrentfs-test-mnt/data/os/linux/
-# → ubuntu-25.10.torrent/  debian.torrent/
+# → ubuntu-25.10-desktop.torrent/  debian-13.5.0-amd64-netinst.iso.torrent/
 
 # 用户操作：删除种子
-rm /tmp/torrentfs-test-mnt/metadata/os/linux/debian.torrent
+rm /tmp/torrentfs-test-mnt/metadata/os/linux/debian-13.5.0-amd64-netinst.iso.torrent
 
 # 用户期望：data/ 下对应消失
 ls /tmp/torrentfs-test-mnt/data/os/linux/
-# → ubuntu-25.10.torrent/  （debian 已消失）
+# → ubuntu-25.10-desktop.torrent/  （debian 已消失）
 ```
 
 **检查要点**：
@@ -176,47 +206,47 @@ ls /tmp/torrentfs-test-mnt/data/os/linux/
 # 准备：创建多级目录结构并放入种子
 mkdir -p /tmp/torrentfs-test-mnt/metadata/cat-a
 mkdir -p /tmp/torrentfs-test-mnt/metadata/cat-b
-cp /workspace/torrentfs/ubuntu.iso.torrent /tmp/torrentfs-test-mnt/metadata/cat-a/
-cp /workspace/torrentfs/debian.torrent /tmp/torrentfs-test-mnt/metadata/cat-a/
-cp /workspace/torrentfs/fedora.torrent /tmp/torrentfs-test-mnt/metadata/
+cp "/tmp/torrentfs-test-seeds/ubuntu-25.10-desktop-amd64.iso.torrent" /tmp/torrentfs-test-mnt/metadata/cat-a/
+cp "/tmp/torrentfs-test-seeds/debian-13.5.0-amd64-netinst.iso.torrent" /tmp/torrentfs-test-mnt/metadata/cat-a/
+cp "/tmp/torrentfs-test-seeds/selfseed.torrent" /tmp/torrentfs-test-mnt/metadata/
 
 # 1. 从根目录移动到子目录
-mv /tmp/torrentfs-test-mnt/metadata/fedora.torrent    /tmp/torrentfs-test-mnt/metadata/cat-b/
+mv /tmp/torrentfs-test-mnt/metadata/selfseed.torrent    /tmp/torrentfs-test-mnt/metadata/cat-b/
 # 期望：mv 成功，exit 0
 
 # 验证 data/ 镜像
 ls /tmp/torrentfs-test-mnt/data/cat-b/
-# 期望：fedora.torrent/ 出现
+# 期望：selfseed.torrent/ 出现
 ls /tmp/torrentfs-test-mnt/data/
-# 期望：fedora.torrent/ 不再出现（已移走）
+# 期望：selfseed.torrent/ 不再出现（已移走）
 
 # 2. 从子目录移动到根目录
-mv /tmp/torrentfs-test-mnt/metadata/cat-a/debian.torrent    /tmp/torrentfs-test-mnt/metadata/
+mv /tmp/torrentfs-test-mnt/metadata/cat-a/debian-13.5.0-amd64-netinst.iso.torrent    /tmp/torrentfs-test-mnt/metadata/
 # 期望：mv 成功，exit 0
 
 # 验证 data/ 镜像
 ls /tmp/torrentfs-test-mnt/data/
-# 期望：debian.torrent/ 出现
+# 期望：debian-13.5.0-amd64-netinst.iso.torrent/ 出现
 ls /tmp/torrentfs-test-mnt/data/cat-a/
-# 期望：debian.torrent/ 不再出现，只剩 ubuntu.iso.torrent/
+# 期望：debian-13.5.0-amd64-netinst.iso.torrent/ 不再出现，只剩 ubuntu-25.10-desktop-amd64.iso.torrent/
 
 # 3. 跨子目录移动
-mv /tmp/torrentfs-test-mnt/metadata/cat-a/ubuntu.iso.torrent    /tmp/torrentfs-test-mnt/metadata/cat-b/
+mv /tmp/torrentfs-test-mnt/metadata/cat-a/ubuntu-25.10-desktop-amd64.iso.torrent    /tmp/torrentfs-test-mnt/metadata/cat-b/
 # 期望：mv 成功，exit 0
 
 # 验证 data/ 镜像
 ls /tmp/torrentfs-test-mnt/data/cat-b/
-# 期望：fedora.torrent/ + ubuntu.iso.torrent/ 两个目录
+# 期望：selfseed.torrent/ + ubuntu-25.10-desktop-amd64.iso.torrent/ 两个目录
 ls /tmp/torrentfs-test-mnt/data/cat-a/
 # 期望：空（或目录不存在）
 
 # 4. 移动到不存在的目录 - 应失败
-mv /tmp/torrentfs-test-mnt/metadata/cat-b/ubuntu.iso.torrent    /tmp/torrentfs-test-mnt/metadata/nonexistent/ 2>&1
+mv /tmp/torrentfs-test-mnt/metadata/cat-b/ubuntu-25.10-desktop-amd64.iso.torrent    /tmp/torrentfs-test-mnt/metadata/nonexistent/ 2>&1
 echo "exit code: $?"
 # 期望：非 0，ENOENT 或 "No such file or directory"
 
 # 5. 移动后验证种子仍可读取
-stat /tmp/torrentfs-test-mnt/data/cat-b/fedora.torrent/
+stat /tmp/torrentfs-test-mnt/data/cat-b/selfseed.torrent/
 # 期望：目录存在，权限正确
 
 # 6. 移动后验证 source_path 已更新
@@ -228,8 +258,8 @@ ls /tmp/torrentfs-test-mnt/data/cat-a/ 2>&1
 # 期望：空目录或无此目录
 
 # 8. 同名移动（覆盖）—— 同一目录下同种子名
-cp /workspace/torrentfs/ubuntu.iso.torrent /tmp/torrentfs-test-mnt/metadata/cat-a/
-mv /tmp/torrentfs-test-mnt/metadata/cat-b/ubuntu.iso.torrent    /tmp/torrentfs-test-mnt/metadata/cat-a/ubuntu.iso.torrent 2>&1
+cp "/tmp/torrentfs-test-seeds/ubuntu-25.10-desktop-amd64.iso.torrent" /tmp/torrentfs-test-mnt/metadata/cat-a/
+mv /tmp/torrentfs-test-mnt/metadata/cat-b/ubuntu-25.10-desktop-amd64.iso.torrent    /tmp/torrentfs-test-mnt/metadata/cat-a/ubuntu-25.10-desktop-amd64.iso.torrent 2>&1
 echo "exit code: $?"
 # 期望：按文件系统语义处理（覆盖或拒绝，需定义行为）
 
@@ -261,7 +291,7 @@ diff <(cd /tmp/torrentfs-test-mnt/metadata/ && find . -name '*.torrent' | sed 's
 ```bash
 # === 全量读取 ===
 # 用户操作：尝试读取一个文件
-cat /tmp/torrentfs-test-mnt/data/os/linux/ubuntu.torrent/ubuntu.iso > /tmp/test-output.iso
+cat /tmp/torrentfs-test-mnt/data/os/linux/ubuntu-25.10-desktop-amd64.iso.torrent/ubuntu-25.10-desktop-amd64.iso > /tmp/test-output.iso
 
 # 用户期望：
 # - 命令不立即报错（即使数据尚未下载）
@@ -270,42 +300,42 @@ cat /tmp/torrentfs-test-mnt/data/os/linux/ubuntu.torrent/ubuntu.iso > /tmp/test-
 # - 输出文件内容正确（与种子 hash 一致）
 
 # 验证输出完整性
-ORIG_SIZE=$(stat --format=%s /tmp/torrentfs-test-mnt/data/os/linux/ubuntu.torrent/ubuntu.iso)
+ORIG_SIZE=$(stat --format=%s /tmp/torrentfs-test-mnt/data/os/linux/ubuntu-25.10-desktop-amd64.iso.torrent/ubuntu-25.10-desktop-amd64.iso)
 OUTPUT_SIZE=$(stat --format=%s /tmp/test-output.iso)
 echo "Original: $ORIG_SIZE  Output: $OUTPUT_SIZE"
 # 期望：大小一致
 
 # === 部分读取（seek/skip） ===
 # 读取文件中间 1KB（从 1MB 偏移处开始）
-dd if=/tmp/torrentfs-test-mnt/data/os/linux/ubuntu.torrent/ubuntu.iso    of=/tmp/test-chunk.bin bs=1024 skip=1024 count=1 2>&1
+dd if=/tmp/torrentfs-test-mnt/data/os/linux/ubuntu-25.10-desktop-amd64.iso.torrent/ubuntu-25.10-desktop-amd64.iso    of=/tmp/test-chunk.bin bs=1024 skip=1024 count=1 2>&1
 # 期望：正确读取 1024 字节
 
 # 读取文件开头 4KB
-dd if=/tmp/torrentfs-test-mnt/data/os/linux/ubuntu.torrent/ubuntu.iso    of=/tmp/test-head.bin bs=4096 count=1 2>&1
+dd if=/tmp/torrentfs-test-mnt/data/os/linux/ubuntu-25.10-desktop-amd64.iso.torrent/ubuntu-25.10-desktop-amd64.iso    of=/tmp/test-head.bin bs=4096 count=1 2>&1
 # 期望：正确读取 4096 字节
 
 # 读取文件末尾 1KB
-FILE_SIZE=$(stat --format=%s /tmp/torrentfs-test-mnt/data/os/linux/ubuntu.torrent/ubuntu.iso)
+FILE_SIZE=$(stat --format=%s /tmp/torrentfs-test-mnt/data/os/linux/ubuntu-25.10-desktop-amd64.iso.torrent/ubuntu-25.10-desktop-amd64.iso)
 TAIL_OFFSET=$((FILE_SIZE / 1024 - 1))
-dd if=/tmp/torrentfs-test-mnt/data/os/linux/ubuntu.torrent/ubuntu.iso    of=/tmp/test-tail.bin bs=1024 skip=$TAIL_OFFSET count=1 2>&1
+dd if=/tmp/torrentfs-test-mnt/data/os/linux/ubuntu-25.10-desktop-amd64.iso.torrent/ubuntu-25.10-desktop-amd64.iso    of=/tmp/test-tail.bin bs=1024 skip=$TAIL_OFFSET count=1 2>&1
 # 期望：读取最后 1024 字节，不越界
 
 # === 多次读取（验证缓存加速） ===
-time cat /tmp/torrentfs-test-mnt/data/os/linux/ubuntu.torrent/ubuntu.iso > /dev/null
+time cat /tmp/torrentfs-test-mnt/data/os/linux/ubuntu-25.10-desktop-amd64.iso.torrent/ubuntu-25.10-desktop-amd64.iso > /dev/null
 echo "First read done"
 
-time cat /tmp/torrentfs-test-mnt/data/os/linux/ubuntu.torrent/ubuntu.iso > /dev/null
+time cat /tmp/torrentfs-test-mnt/data/os/linux/ubuntu-25.10-desktop-amd64.iso.torrent/ubuntu-25.10-desktop-amd64.iso > /dev/null
 echo "Second read (should be faster due to cache)"
 
 # === 读取超出文件大小 ===
 # 尝试从超出的偏移量读取 → 应返回 0 字节，不 panic
-dd if=/tmp/torrentfs-test-mnt/data/os/linux/ubuntu.torrent/ubuntu.iso    of=/tmp/test-eof.bin bs=1 skip=999999999 count=1 2>&1
+dd if=/tmp/torrentfs-test-mnt/data/os/linux/ubuntu-25.10-desktop-amd64.iso.torrent/ubuntu-25.10-desktop-amd64.iso    of=/tmp/test-eof.bin bs=1 skip=999999999 count=1 2>&1
 echo "EOF read exit code: $?"
 # 期望：返回 0（正常 EOF），不报错
 
 # === 查看文件大小（不应为 0） ===
-ls -la /tmp/torrentfs-test-mnt/data/os/linux/ubuntu.torrent/ubuntu.iso
-stat /tmp/torrentfs-test-mnt/data/os/linux/ubuntu.torrent/ubuntu.iso
+ls -la /tmp/torrentfs-test-mnt/data/os/linux/ubuntu-25.10-desktop-amd64.iso.torrent/ubuntu-25.10-desktop-amd64.iso
+stat /tmp/torrentfs-test-mnt/data/os/linux/ubuntu-25.10-desktop-amd64.iso.torrent/ubuntu-25.10-desktop-amd64.iso
 # 期望：size 显示完整大小，不是 0
 ```
 
@@ -339,8 +369,8 @@ find /tmp/torrentfs-test-mnt/data/ -type f -o -type d | head -50
 # stat 各个条目
 stat /tmp/torrentfs-test-mnt/data/
 stat /tmp/torrentfs-test-mnt/data/os/
-stat /tmp/torrentfs-test-mnt/data/os/linux/ubuntu.torrent/
-stat /tmp/torrentfs-test-mnt/data/os/linux/ubuntu.torrent/ubuntu.iso
+stat /tmp/torrentfs-test-mnt/data/os/linux/ubuntu-25.10-desktop-amd64.iso.torrent/
+stat /tmp/torrentfs-test-mnt/data/os/linux/ubuntu-25.10-desktop-amd64.iso.torrent/ubuntu-25.10-desktop-amd64.iso
 # 期望：所有路径 stat 正常返回，文件大小 > 0，权限正确
 
 # 检查 data/ 镜像 metadata/ 结构
@@ -372,7 +402,7 @@ echo "hello" > /tmp/torrentfs-test-mnt/data/foo.txt
 # 期望：Permission denied 或 Read-only file system
 
 # 错误2：删除 data/ 下的文件
-rm /tmp/torrentfs-test-mnt/data/os/linux/ubuntu.torrent/ubuntu.iso
+rm /tmp/torrentfs-test-mnt/data/os/linux/ubuntu-25.10-desktop-amd64.iso.torrent/ubuntu-25.10-desktop-amd64.iso
 # 期望：Read-only file system
 
 # 错误3：在 data/ 下创建目录
@@ -383,8 +413,8 @@ mkdir /tmp/torrentfs-test-mnt/data/newdir
 mv /tmp/torrentfs-test-mnt/data/foo /tmp/torrentfs-test-mnt/data/bar
 # 期望：Operation not permitted 或跨设备链接错误
 
-# 错误5：放入无效 .torrent 文件
-echo "garbage" > /tmp/bad.torrent
+# 错误5：放入无效 .torrent 文件（由服务端种子截断派生）
+head -c 100 /tmp/torrentfs-test-seeds/selfseed.torrent > /tmp/bad.torrent
 cp /tmp/bad.torrent /tmp/torrentfs-test-mnt/metadata/
 # 期望：cp 报错（EINVAL），data/ 下不出现对应目录
 ```
@@ -406,16 +436,17 @@ cp /tmp/bad.torrent /tmp/torrentfs-test-mnt/metadata/
 
 ```bash
 # 终端1：读取一个大文件
-cat /tmp/torrentfs-test-mnt/data/ubuntu.torrent/large.iso > /dev/null &
+cat /tmp/torrentfs-test-mnt/data/ubuntu-25.10-desktop-amd64.iso.torrent/ubuntu-25.10-desktop-amd64.iso > /dev/null &
 
 # 终端2：同时浏览同一目录
-ls -la /tmp/torrentfs-test-mnt/data/ubuntu.torrent/
+ls -la /tmp/torrentfs-test-mnt/data/ubuntu-25.10-desktop-amd64.iso.torrent/
 
 # 终端3：同时在另一个种子目录浏览
-ls -la /tmp/torrentfs-test-mnt/data/debian.torrent/
+ls -la /tmp/torrentfs-test-mnt/data/debian-13.5.0-amd64-netinst.iso.torrent/
 
 # 终端4：同时删除另一个种子
-rm /tmp/torrentfs-test-mnt/metadata/old.torrent
+cp "/tmp/torrentfs-test-seeds/selfseed.torrent" /tmp/torrentfs-test-mnt/metadata/
+rm /tmp/torrentfs-test-mnt/metadata/selfseed.torrent
 ```
 
 **检查要点**：
@@ -465,7 +496,7 @@ ls -la "$CACHE_DIR" 2>/dev/null || echo "cache dir not found"
 find /tmp/torrentfs-test-state/ -type f | head -20
 
 # 2. 首次读取文件（触发下载）
-time cat /tmp/torrentfs-test-mnt/data/os/linux/ubuntu.torrent/ubuntu.iso > /dev/null
+time cat /tmp/torrentfs-test-mnt/data/os/linux/ubuntu-25.10-desktop-amd64.iso.torrent/ubuntu-25.10-desktop-amd64.iso > /dev/null
 echo "First read time: (see above)"
 
 # 3. 检查缓存是否已创建
@@ -482,7 +513,7 @@ if [ -n "$CACHE_FILE" ]; then
 fi
 
 # 5. 再次读取（应命中缓存，更快）
-time cat /tmp/torrentfs-test-mnt/data/os/linux/ubuntu.torrent/ubuntu.iso > /dev/null
+time cat /tmp/torrentfs-test-mnt/data/os/linux/ubuntu-25.10-desktop-amd64.iso.torrent/ubuntu-25.10-desktop-amd64.iso > /dev/null
 echo "Second read time: (should be much faster)"
 # 期望：第二次明显快于第一次
 
@@ -497,11 +528,11 @@ find /tmp/torrentfs-test-state/ -type f | wc -l
 sleep 2
 
 # 再次读取（应命中持久化缓存，不需要重新下载）
-time cat /tmp/torrentfs-test-mnt/data/os/linux/ubuntu.torrent/ubuntu.iso > /dev/null
+time cat /tmp/torrentfs-test-mnt/data/os/linux/ubuntu-25.10-desktop-amd64.iso.torrent/ubuntu-25.10-desktop-amd64.iso > /dev/null
 echo "Post-remount read time: (should hit cache, not re-download)"
 
 # 7. 删除种子后缓存清理
-rm /tmp/torrentfs-test-mnt/metadata/os/linux/ubuntu.torrent
+rm /tmp/torrentfs-test-mnt/metadata/os/linux/ubuntu-25.10-desktop-amd64.iso.torrent
 # 期望：对应缓存被清理（或延迟清理），不残留孤岛数据
 ```
 
@@ -525,13 +556,12 @@ rm /tmp/torrentfs-test-mnt/metadata/os/linux/ubuntu.torrent
 
 ```bash
 # 1. 批量写入种子
-echo "批量写入 20 个种子到 metadata/"
-SEED_DIR="/workspace/torrentfs"
+echo "批量写入全部 6 个种子到 metadata/"
 BATCH_DIR="/tmp/torrentfs-test-mnt/metadata/batch-import"
 
 mkdir -p "$BATCH_DIR"
 # 复制所有可用种子（含 Ubuntu ISO 等大种子）
-cp "$SEED_DIR"/*.torrent "$BATCH_DIR/" 2>/dev/null
+cp /tmp/torrentfs-test-seeds/*.torrent "$BATCH_DIR/" 2>/dev/null
 echo "写入数量: $(ls "$BATCH_DIR"/*.torrent 2>/dev/null | wc -l)"
 
 # 用户期望：所有种子无报错写入
@@ -587,7 +617,7 @@ find /tmp/torrentfs-test-mnt/metadata/ -type f -name '*.torrent' | sort
 
 | 检查项 | 期望 |
 |--------|------|
-| 批量 cp 20+ 种子无报错 | 全部成功写入 |
+| 批量 cp 6 个种子无报错 | 全部成功写入 |
 | 实时镜像 | 写入后 data/ 立即出现对应目录（无延迟） |
 | mv 种子到子目录 | data/ 同步 mv，不残留 |
 | 多层目录结构镜像 | metadata/a/b/c/seed → data/a/b/c/seed/ |
@@ -699,7 +729,7 @@ rm -f /tmp/torrentfs-config.toml /tmp/torrentfs-bad.toml /tmp/torrentfs-partial.
 
 sleep 1
 
-cp /workspace/torrentfs/ubuntu.iso.torrent /tmp/torrentfs-test-mnt/metadata/
+cp "/tmp/torrentfs-test-seeds/ubuntu-25.10-desktop-amd64.iso.torrent" /tmp/torrentfs-test-mnt/metadata/
 
 # 2. 检查 .stats 是否可见
 ls -la /tmp/torrentfs-test-mnt/
@@ -735,7 +765,7 @@ cat /tmp/torrentfs-test-mnt/.stats | grep "source_path"
 # 期望：每个 info_hash 条目下列出关联种子和 source_path
 
 # 8. 实时性验证 —— 写入新种子后数据更新
-cp /workspace/torrentfs/debian.torrent /tmp/torrentfs-test-mnt/metadata/
+cp "/tmp/torrentfs-test-seeds/debian-13.5.0-amd64-netinst.iso.torrent" /tmp/torrentfs-test-mnt/metadata/
 sleep 1
 cat /tmp/torrentfs-test-mnt/.stats | grep "种子实例"
 # 期望：种子数从 1 变为 2（或更多）

@@ -40,13 +40,35 @@ curl -s http://localhost:18999/api/v1/workers | jq .
 
 ### 测试媒体
 
+验收测试的媒体一律从共享测试数据服务下载，**不用 `ffmpeg -f lavfi` 现造、也不用 `/workspace` 下的本地副本**——各 QA 主机本地数据不同会让结论不可复现。
+
 ```bash
+TESTDATA_BASE="http://10.20.33.70:8080/testdata"
 mkdir -p /tmp/rffmpeg-test-media
-ffmpeg -f lavfi -i testsrc=duration=10:size=1280x720:rate=30 -c:v libx264 /tmp/rffmpeg-test-media/test-720p.mp4
-ffmpeg -f lavfi -i sine=frequency=440:duration=5 /tmp/rffmpeg-test-media/test-audio.mp3
-dd if=/dev/urandom of=/tmp/rffmpeg-test-media/test-broken.mp4 bs=1024 count=10
-ffmpeg -f lavfi -i testsrc=duration=120:size=1920x1080:rate=30 -c:v libx264 /tmp/rffmpeg-test-media/test-large.mp4
+
+# 小样：320x240 H.264 + AAC，5s（基础转码 / 错误路径 / 缓存）
+curl -fsSL -o /tmp/rffmpeg-test-media/small-test.mp4 \
+  "$TESTDATA_BASE/small-test.mp4"
+# 大样：3840x2160 HEVC + 双 AAC，24m54s，453 MB（转码效果 / 进度 / 超时）
+curl -fsSL -o /tmp/rffmpeg-test-media/test-2160p.mkv \
+  "$TESTDATA_BASE/Movies/%E5%90%8D%E4%BE%A6%E6%8E%A2%E6%9F%AF%E5%8D%97%20S01E999%202160p.HaresWEB.mkv"
+
+# 派生夹具（都由上面的服务端文件生成，不引入第二来源）
+ffmpeg -y -v error -i /tmp/rffmpeg-test-media/test-2160p.mkv -vn -c:a copy -t 10 \
+  /tmp/rffmpeg-test-media/test-audio.m4a
+head -c 10240 /tmp/rffmpeg-test-media/small-test.mp4 > /tmp/rffmpeg-test-media/test-broken.mp4
+
+ls -l /tmp/rffmpeg-test-media
 ```
+
+| 文件 | 服务端来源 | 规格 | 用途 |
+|---|---|---|---|
+| `small-test.mp4` | `/testdata/small-test.mp4` | 320x240 H.264 + AAC，5s，75 KB | 基础转码、错误路径、缓存 |
+| `test-2160p.mkv` | `/testdata/Movies/名侦探柯南 S01E999 2160p.HaresWEB.mkv` | 3840x2160 HEVC + 双 AAC，24m54s，453 MB | 转码效果、进度/ETA、超时 |
+| `test-audio.m4a` | 由 `test-2160p.mkv` 抽取 | AAC，10s | 多输入、音频提取 |
+| `test-broken.mp4` | 由 `small-test.mp4` 截断 | 10 KB 无效容器 | 输入错误路径 |
+
+下载失败（服务端不可达 / `curl` 非 0）→ **QA_BLOCKED**，不得用本地残留或现场生成的媒体继续。
 
 ### 清理
 
@@ -72,7 +94,7 @@ rm -rf /tmp/rffmpeg-test-data /tmp/rffmpeg-worker-work /tmp/rffmpeg-worker-confi
 用户最简单的操作：
 
 ```bash
-./bin/rffmpeg -i /tmp/rffmpeg-test-media/test-720p.mp4 -c:v libx264 output.mp4
+./bin/rffmpeg -i /tmp/rffmpeg-test-media/small-test.mp4 -c:v libx264 output.mp4
 ```
 
 **检查**：CLI 接受原生 ffmpeg 参数无报错；stderr 实时输出进度（帧数/fps/bitrate）；`output.mp4` 存在且 `ffprobe` 正常；同参数下与原生 ffmpeg 输出 `diff` 一致。
@@ -85,17 +107,17 @@ rm -rf /tmp/rffmpeg-test-data /tmp/rffmpeg-worker-work /tmp/rffmpeg-worker-confi
 
 ```bash
 # 多输入
-./bin/rffmpeg -i video.mp4 -i audio.mp3 -c:v copy -c:a aac -shortest merged.mp4
+./bin/rffmpeg -i /tmp/rffmpeg-test-media/small-test.mp4 -i /tmp/rffmpeg-test-media/test-audio.m4a -c:v copy -c:a aac -shortest merged.mp4
 # 滤镜链
-./bin/rffmpeg -i input.mp4 -vf "scale=640:480,drawtext=text='test':x=10:y=10" out.mp4
+./bin/rffmpeg -i /tmp/rffmpeg-test-media/small-test.mp4 -vf "scale=640:480,drawtext=text='test':x=10:y=10" out.mp4
 # 编码器选项
-./bin/rffmpeg -i input.mp4 -c:v libx264 -preset fast -crf 23 -c:a aac -b:a 128k out.mp4
+./bin/rffmpeg -i /tmp/rffmpeg-test-media/small-test.mp4 -c:v libx264 -preset fast -crf 23 -c:a aac -b:a 128k out.mp4
 # 时间裁剪
-./bin/rffmpeg -ss 00:00:05 -i input.mp4 -t 00:00:03 clip.mp4
+./bin/rffmpeg -ss 00:00:01 -i /tmp/rffmpeg-test-media/small-test.mp4 -t 00:00:03 clip.mp4
 # 提取音频
-./bin/rffmpeg -i input.mp4 -vn -c:a libmp3lame -q:a 2 audio.mp3
+./bin/rffmpeg -i /tmp/rffmpeg-test-media/small-test.mp4 -vn -c:a libmp3lame -q:a 2 audio.mp3
 # rffmpeg 与 ffmpeg 选项混用
-./bin/rffmpeg --server http://localhost:18999 -i input.mp4 -c:v libx264 out.mp4
+./bin/rffmpeg --server http://localhost:18999 -i /tmp/rffmpeg-test-media/small-test.mp4 -c:v libx264 out.mp4
 ```
 
 **检查**：多输入正确处理；滤镜参数不截断；codec 选项正确传递；-ss/-t 参数正确；rffmpeg 专属选项不被传给 ffmpeg；特殊字符参数（空格/引号）正确传递。
@@ -110,13 +132,13 @@ rm -rf /tmp/rffmpeg-test-data /tmp/rffmpeg-worker-work /tmp/rffmpeg-worker-confi
 # 文件不存在
 ./bin/rffmpeg nonexistent.mp4 out.mp4
 # 参数不完整
-./bin/rffmpeg -i input.mp4 -c:v
+./bin/rffmpeg -i /tmp/rffmpeg-test-media/small-test.mp4 -c:v
 # 不支持的编码器
-./bin/rffmpeg -i input.mp4 -c:v nonexistent_codec out.mp4
+./bin/rffmpeg -i /tmp/rffmpeg-test-media/small-test.mp4 -c:v nonexistent_codec out.mp4
 # 空命令
 ./bin/rffmpeg
 # Server 不可达
-pkill rffmpeg-server && ./bin/rffmpeg -i input.mp4 out.mp4
+pkill rffmpeg-server && ./bin/rffmpeg -i /tmp/rffmpeg-test-media/small-test.mp4 out.mp4
 ```
 
 **检查**：文件不存在 → 明确提示文件名（无 panic/堆栈）；参数不完整 → 类似 ffmpeg 风格错误；不支持编码器 → 明确说明；空命令 → 显示帮助（与 ffmpeg 一致）；Server 不可达 → 3 秒内返回连接错误，不卡死。
@@ -130,11 +152,11 @@ pkill rffmpeg-server && ./bin/rffmpeg -i input.mp4 out.mp4
 ```bash
 # Server 宕机
 pkill rffmpeg-server
-./bin/rffmpeg -i input.mp4 out.mp4  # 期望：3s 内返回连接错误
+./bin/rffmpeg -i /tmp/rffmpeg-test-media/small-test.mp4 out.mp4  # 期望：3s 内返回连接错误
 
 # 无可用 Worker
 pkill rffmpeg-worker
-./bin/rffmpeg -i input.mp4 out.mp4  # 期望：明确提示无可用 Worker
+./bin/rffmpeg -i /tmp/rffmpeg-test-media/small-test.mp4 out.mp4  # 期望：明确提示无可用 Worker
 
 # Worker 执行中崩溃
 # （启动任务后 kill worker 进程）
@@ -142,7 +164,7 @@ pkill rffmpeg-worker
 
 # 并发提交
 for i in $(seq 1 10); do
-  ./bin/rffmpeg -i input.mp4 -c:v libx264 "out_$i.mp4" &
+  ./bin/rffmpeg -i /tmp/rffmpeg-test-media/small-test.mp4 -c:v libx264 "out_$i.mp4" &
 done
 wait  # 期望：全部完成或全部报错，无部分丢失
 
@@ -161,21 +183,21 @@ Worker 根据硬件能力改写编码器参数，CLI 必须透明告知。
 
 ```bash
 # 未指定编码器 → 自动硬件加速
-./bin/rffmpeg -i test-720p.mp4 output.mp4
+./bin/rffmpeg -i /tmp/rffmpeg-test-media/small-test.mp4 output.mp4
 # 期望：stderr 显示 [rffmpeg] Auto-selected encoder: h264_vaapi
 
 # 不支持的编码器 → 降级
-./bin/rffmpeg -i test-720p.mp4 -c:v h264_nvenc output.mp4
+./bin/rffmpeg -i /tmp/rffmpeg-test-media/small-test.mp4 -c:v h264_nvenc output.mp4
 # 期望：[rffmpeg] h264_nvenc unavailable, fallback to h264_vaapi
 # 跨格式降级应拒绝（如 AV1→H.264）
 
 # --auto-hw flag 控制
-./bin/rffmpeg --auto-hw -i test-720p.mp4 -c:v libx264 output.mp4
+./bin/rffmpeg --auto-hw -i /tmp/rffmpeg-test-media/small-test.mp4 -c:v libx264 output.mp4
 # 期望：[rffmpeg] --auto-hw: upgraded libx264 → h264_vaapi
 # 不加 --auto-hw 时尊重用户选择，不改写
 
 # 参数映射（crf→qp 等）
-./bin/rffmpeg --auto-hw -i test-720p.mp4 -c:v libx264 -crf 23 -preset fast output.mp4
+./bin/rffmpeg --auto-hw -i /tmp/rffmpeg-test-media/small-test.mp4 -c:v libx264 -crf 23 -preset fast output.mp4
 # 期望：stderr 显示映射详情，SSIM > 0.95
 
 # Worker 能力上报与调度
@@ -194,24 +216,24 @@ TSI-710 安全底座。
 ```bash
 # 无 token → 拒绝（不回退本地 ffmpeg）
 unset RFFMPEG_TOKEN
-./bin/rffmpeg -i test-720p.mp4 out.mp4  # 期望：exit code ≠ 0
+./bin/rffmpeg -i /tmp/rffmpeg-test-media/small-test.mp4 out.mp4  # 期望：exit code ≠ 0
 
 # 错 token → 401
 export RFFMPEG_TOKEN=wrong-token
-./bin/rffmpeg -i test-720p.mp4 out.mp4  # 期望：HTTP 401，明确提示
+./bin/rffmpeg -i /tmp/rffmpeg-test-media/small-test.mp4 out.mp4  # 期望：HTTP 401，明确提示
 
 # 正确 token → 正常
 export RFFMPEG_TOKEN=test-token-12345
-./bin/rffmpeg -i test-720p.mp4 out.mp4  # 期望：正常转码
+./bin/rffmpeg -i /tmp/rffmpeg-test-media/small-test.mp4 out.mp4  # 期望：正常转码
 
 # Rate limit 超限 → 429
 for i in $(seq 1 15); do
-  ./bin/rffmpeg -i test-720p.mp4 -c:v libx264 "out_$i.mp4" &
+  ./bin/rffmpeg -i /tmp/rffmpeg-test-media/small-test.mp4 -c:v libx264 "out_$i.mp4" &
 done
 wait  # 期望：超出 limit 返回 429，已在队列的任务不受影响
 
 # Timeout
-./bin/rffmpeg -i test-large.mp4 -c:v libx264 --timeout 5 out.mp4
+./bin/rffmpeg -i /tmp/rffmpeg-test-media/test-2160p.mkv -c:v libx264 --timeout 5 out.mp4
 # 期望：5s 后终止，Worker 无残留 ffmpeg 进程，不产生部分输出
 ```
 
@@ -224,8 +246,8 @@ wait  # 期望：超出 limit 返回 429，已在队列的任务不受影响
 TSI-711 远程输入源、流式输出、Worker 缓存。
 
 ```bash
-# HTTP 输入
-./bin/rffmpeg -i http://example.com/test-video.mp4 -c:v libx264 out.mp4
+# HTTP 输入（直接用共享测试数据服务的真实 URL，验证 Worker 自行拉取）
+./bin/rffmpeg -i http://10.20.33.70:8080/testdata/small-test.mp4 -c:v libx264 out.mp4
 # 期望：Worker 自行下载，不经过 CLI 上传
 
 # 不可达 URL
@@ -233,12 +255,12 @@ TSI-711 远程输入源、流式输出、Worker 缓存。
 # 期望：INPUT_UNREACHABLE 分类错误
 
 # 流式输出到 stdout
-./bin/rffmpeg -i test-720p.mp4 -f mp4 - > output_pipe.mp4
+./bin/rffmpeg -i /tmp/rffmpeg-test-media/small-test.mp4 -f mp4 - > output_pipe.mp4
 # 期望：数据实时流回，Ctrl+C 后 Worker 停止
 
 # 缓存命中
-./bin/rffmpeg -i test-720p.mp4 -c:v libx264 out1.mp4  # 首次
-./bin/rffmpeg -i test-720p.mp4 -c:v libx264 out2.mp4  # 期望：[rffmpeg] Cache hit
+./bin/rffmpeg -i /tmp/rffmpeg-test-media/small-test.mp4 -c:v libx264 out1.mp4  # 首次
+./bin/rffmpeg -i /tmp/rffmpeg-test-media/small-test.mp4 -c:v libx264 out2.mp4  # 期望：[rffmpeg] Cache hit
 # 不同参数不命中，TTL/LRU 驱逐生效
 ```
 
@@ -252,11 +274,11 @@ TSI-712 ffprobe、进度、心跳、失败分类。
 
 ```bash
 # ffprobe 端点
-./bin/rffmpeg probe -i test-720p.mp4 -show_streams -of json
+./bin/rffmpeg probe -i /tmp/rffmpeg-test-media/small-test.mp4 -show_streams -of json
 # 期望：JSON 含 _rffmpeg{worker_encoders, suggestion}，同步返回无延迟
 
 # 进度与 ETA
-./bin/rffmpeg -i test-large.mp4 -c:v libx264 out.mp4 2>progress.log
+./bin/rffmpeg -i /tmp/rffmpeg-test-media/test-2160p.mkv -t 60 -c:v libx264 out.mp4 2>progress.log
 # 期望：0%→100% 线性增长，ETA 误差 <20%，每秒1-2次不刷屏
 
 # Worker 心跳面板
